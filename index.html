@@ -178,21 +178,16 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // ==========================================
-        //  請注意：要在 GitHub Pages 上運作，您必須
-        //  將下方的 firebaseConfig 替換為您自己的專案設定！
-        // ==========================================
+        // Firebase 配置
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : { 
-                // ↓↓↓ 請將這裡替換為您自己的 Firebase Config ↓↓↓
-                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM", 
+                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM",
                 authDomain: "ghibli-list.firebaseapp.com",
                 projectId: "ghibli-list",
                 storageBucket: "ghibli-list.firebasestorage.app",
                 messagingSenderId: "730434760352",
                 appId: "1:730434760352:web:23190ab321a6261905e3c5"
-                // ↑↑↑ 預設的這組 Key 會限制網域，導致 GitHub 報錯 ↑↑↑
             };
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : "ghibli-pro-app";
@@ -349,16 +344,18 @@
                     }
                 });
 
-                // 4. 成員監聽 (已恢復：Terry & Eric 自動建立邏輯，使用 ISOString)
+                // 4. 成員監聽 (恢復 Terry & Eric 自動建立邏輯，加入失敗備案)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
                     setMembers(sorted);
 
-                    // 如果資料庫是空的，且尚未初始化過，則寫入預設成員
+                    // 如果資料庫是空的，且尚未初始化過，則嘗試寫入預設成員
+                    // 加入 !hasCheckedMembersInDb.current 鎖定，避免無窮迴圈
                     if (snap.empty && !hasCheckedMembersInDb.current && !snap.metadata.fromCache) {
                         hasCheckedMembersInDb.current = true;
+                        
                         const batch = db.batch();
                         ['Terry', 'Eric'].forEach((name, i) => {
                             const ref = path.collection('members').doc();
@@ -368,9 +365,24 @@
                                 createdAt: new Date().toISOString() // 使用字串時間避免錯誤
                             });
                         });
-                        batch.commit().catch(err => console.error("Initial Members error:", err));
+                        
+                        batch.commit().catch(err => {
+                            console.error("Initial Members DB Write Failed:", err);
+                            // 寫入失敗（例如權限問題）時的備案：直接在本地顯示，讓用戶能用
+                            setMembers([
+                                { id: 'local-1', name: 'Terry' },
+                                { id: 'local-2', name: 'Eric' }
+                            ]);
+                        });
                     }
-                }, err => console.error("Members Listener Error:", err));
+                }, err => {
+                    console.error("Members Listener Error:", err);
+                    // 讀取完全失敗（例如權限問題）時的備案：直接在本地顯示
+                    setMembers([
+                        { id: 'local-1', name: 'Terry' },
+                        { id: 'local-2', name: 'Eric' }
+                    ]);
+                });
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
@@ -436,11 +448,14 @@
                     setNewMemberName('');
                 } catch (err) { 
                     console.error("Add Member Error:", err);
-                    alert("新增失敗");
+                    alert("新增失敗 (可能為連線或權限問題)");
                 }
             };
 
             const handleDeleteMember = async (id) => {
+                // 如果是本地備用成員，不執行刪除
+                if (id.startsWith('local-')) return; 
+
                 if (!confirm("確定要刪除這位成員嗎？")) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
@@ -510,6 +525,10 @@
                 const [movedItem] = list.splice(dragIndex, 1);
                 list.splice(dropIndex, 0, movedItem);
                 const collectionName = type === 'cat' ? 'categories' : type === 'exp' ? 'expenseItems' : 'members';
+                
+                // 如果是本地成員，不執行拖曳排序的 DB 寫入
+                if (list.some(i => i.id.startsWith('local-'))) return;
+
                 const batch = db.batch();
                 list.forEach((item, idx) => {
                     const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection(collectionName).doc(item.id);
