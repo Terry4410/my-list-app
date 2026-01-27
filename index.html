@@ -285,6 +285,9 @@
             const [newExpenseItemName, setNewExpenseItemName] = useState('');
             const [newMemberName, setNewMemberName] = useState('');
 
+            // 用於追蹤是否已經完成初始化的 Ref，防止閃爍
+            const hasInitializedOwners = useRef(false);
+
             // 日期驗證狀態
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
             const isAddDateInvalid = useMemo(() => dateMode === 'range' && startDate && endDate && endDate < startDate, [dateMode, startDate, endDate]);
@@ -337,14 +340,22 @@
                     if (d.length === 0) {
                         ['Terry', 'Eric'].forEach((name, i) => 
                             path.collection('members').add({ name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+                    } else {
+                        const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+                        setMembers(sorted);
                     }
-                    const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
-                    setMembers(sorted);
-                    if (owners.length === 0 && sorted.length > 0) setOwners([sorted[0].name]);
                 });
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
+
+            // 當成員列表載入後，執行一次預設選取，避免在 snapshot 內更新導致閃爍
+            useEffect(() => {
+                if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
+                    setOwners([members[0].name]);
+                    hasInitializedOwners.current = true;
+                }
+            }, [members]);
 
             const handleLinkAdd = () => setLinks([{ label: '', url: '' }, ...links]);
 
@@ -571,13 +582,16 @@
                                         <div className="w-[280px] flex items-center bg-[#F9FBF2] rounded-full px-4 border border-[#E9EED9] shadow-inner">
                                             <input type="text" value={tempKeyword} onChange={e => setTempKeyword(e.target.value)}
                                                 onKeyDown={e => e.key === 'Enter' && setFilterKeyword(tempKeyword)} placeholder="關鍵字..." className="w-full bg-transparent border-none text-[11px] font-black p-2 outline-none" />
-                                            <button onClick={() => setFilterKeyword(tempKeyword)} className="p-1.5 text-emerald-500 hover:text-emerald-700"><Icon name="search" size={16} /></button>
+                                            <button onClick={() => setFilterKeyword(tempKeyword)} className="p-1.5 text-emerald-500 hover:text-emerald-700 transition-colors"><Icon name="search" size={16} /></button>
                                         </div>
-                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm">清空篩選</button>
+                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm hover:bg-rose-100 transition-colors">清空篩選</button>
                                     </div>
                                     <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 z-10">
                                         <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">類別篩選</option>{categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
-                                        <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">成員選擇</option>{members.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}</select>
+                                        <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]">
+                                            <option value="All">成員選擇</option>
+                                            {members.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
+                                        </select>
                                         <select value={filterExpItem} onChange={e => setFilterExpItem(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">費用篩選</option>{expenseItems.map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
                                         <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="date_asc">日期舊至新</option><option value="date_desc">日期新至舊</option></select>
                                     </div>
