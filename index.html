@@ -288,7 +288,6 @@
 
             // 防閃爍與初始化鎖定標記
             const hasInitializedOwners = useRef(false);
-            const hasCheckedMembersInDb = useRef(false);
 
             // 日期驗證邏輯
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
@@ -344,28 +343,14 @@
                     }
                 });
 
-                // 4. 成員監聽 (極簡穩定版：移除任何會導致重刷的判斷)
+                // 4. 成員監聽 (修正版：移除自動建立預設成員的邏輯，避免閃爍與維護衝突)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 無論數據如何，直接更新本地狀態
+                    // 無論數據如何，直接更新本地狀態，不再自動寫入 Terry/Eric
                     setMembers(sorted);
-
-                    // 僅在資料庫「完全是空」且「我們還沒嘗試過任何動作」時，才進行Terry/Eric初始化
-                    if (memberData.length === 0 && !hasCheckedMembersInDb.current && !snap.metadata.fromCache) {
-                        hasCheckedMembersInDb.current = true; // 鎖定標記，避免重複觸發
-                        const batch = db.batch();
-                        ['Terry', 'Eric'].forEach((name, i) => {
-                            const ref = path.collection('members').doc();
-                            batch.set(ref, { 
-                                name, 
-                                order: i, 
-                                createdAt: firebase.firestore.FieldValue.serverTimestamp() 
-                            });
-                        });
-                        batch.commit().catch(err => console.error("Initial Members error:", err));
-                    }
+                    
                 }, err => console.error("Members Listener Error:", err));
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
@@ -420,8 +405,6 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    // 設定標記為 true，防止新增 Peter 時，Terry/Eric 又重新跳出來
-                    hasCheckedMembersInDb.current = true;
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
@@ -435,7 +418,6 @@
                 if (!confirm("確定要刪除這位成員嗎？")) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    hasCheckedMembersInDb.current = true; // 防止刪除後又自動跳出 Terry/Eric
                     await path.collection('members').doc(id).delete();
                 } catch (err) { console.error(err); }
             };
