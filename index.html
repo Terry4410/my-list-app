@@ -288,7 +288,7 @@
 
             // 防閃爍與初始化鎖定標記
             const hasInitializedOwners = useRef(false);
-            const hasCheckedMembersInDb = useRef(false);
+            // 移除不再需要的 hasCheckedMembersInDb
 
             // 日期驗證邏輯
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
