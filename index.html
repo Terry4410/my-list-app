@@ -363,7 +363,7 @@
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 單純更新本地狀態，不做任何預設值寫入
+                    // 單純更新本地狀態，不做任何預設值寫入，也不要自動建立 Terry/Eric
                     setMembers(sorted);
                     setDataError(null); // 成功讀取則清除錯誤
                     
