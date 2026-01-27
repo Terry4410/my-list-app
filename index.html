@@ -286,9 +286,9 @@
             const [newExpenseItemName, setNewExpenseItemName] = useState('');
             const [newMemberName, setNewMemberName] = useState('');
 
-            // 初始化標記，防止閃爍與重複選取
+            // 初始化標記，防止閃爍與重複寫入
             const hasInitializedOwners = useRef(false);
-            const initialCheckDone = useRef(false);
+            const initialMembersChecked = useRef(false);
 
             // 日期驗證邏輯
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
@@ -344,20 +344,27 @@
                     }
                 });
 
-                // 4. 成員監聽 (穩定修正版)
+                // 4. 成員監聽 (深度修復版)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
-                    const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+                    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    const sorted = data.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+                    
+                    // 先同步最新的資料到介面狀態
                     setMembers(sorted);
 
-                    // 僅當確定從伺服器讀取後且真的沒人，且我們這輩子還沒做過檢查
-                    if (!initialCheckDone.current && !snap.metadata.fromCache) {
-                        initialCheckDone.current = true;
-                        if (memberData.length === 0) {
+                    // 僅在「初次載入」且「名單為空」時初始化預設成員
+                    // initialMembersChecked 標記可防止使用者刪除完所有人後，名單又自動跳回 Terry/Eric
+                    if (!initialMembersChecked.current && !snap.metadata.fromCache) {
+                        initialMembersChecked.current = true;
+                        if (data.length === 0) {
                             const batch = db.batch();
                             ['Terry', 'Eric'].forEach((name, i) => {
                                 const ref = path.collection('members').doc();
-                                batch.set(ref, { name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+                                batch.set(ref, { 
+                                    name, 
+                                    order: i, 
+                                    createdAt: firebase.firestore.FieldValue.serverTimestamp() 
+                                });
                             });
                             batch.commit().catch(console.error);
                         }
@@ -416,13 +423,15 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
+                    // 確保初始化檢查標記已被設定，避免自動初始化覆蓋 Peter/David
+                    initialMembersChecked.current = true;
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
                         createdAt: firebase.firestore.FieldValue.serverTimestamp()
                     });
                     setNewMemberName('');
-                } catch (err) { console.error(err); }
+                } catch (err) { console.error("Add Member Error:", err); }
             };
 
             const handleSubmit = async (e) => {
@@ -439,7 +448,11 @@
                     if (editingId) await ref.doc(editingId).update(data);
                     else await ref.add({ ...data, completed: false, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
                     resetForm(); setActiveTab('list');
-                } catch (err) { console.error(err); }
+                } catch (err) {
+                    console.error("Save Error:", err);
+                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多超過容量限制，請減少圖片或備註內容。");
+                    else alert("儲存失敗");
+                }
                 setIsProcessing(false);
             };
 
@@ -451,6 +464,7 @@
 
             const startEdit = (t) => {
                 setTaskText(t.text); 
+                // 相容舊資料格式：如果沒有 owners 陣列，則使用舊的單一 owner 欄位
                 setOwners(t.owners || (t.owner ? [t.owner] : (members.length > 0 ? [members[0].name] : []))); 
                 setCategory(t.category); setNote(t.note || '');
                 setStartDate(t.startDate || ''); setEndDate(t.endDate || ''); setImages(t.images || []);
@@ -486,6 +500,7 @@
 
             const calculateTaskTotal = (t) => (t.expenses || []).reduce((s, i) => s + (parseFloat(i.amount) || 0), 0);
 
+            // 資料篩選邏輯 (相容舊 owner 格式)
             const sortedTasks = useMemo(() => {
                 let res = [...tasks];
                 if (filterCat !== 'All') res = res.filter(t => t.category === filterCat);
@@ -506,6 +521,7 @@
                 return res;
             }, [tasks, filterCat, filterOwner, filterExpItem, filterStartDate, filterEndDate, filterKeyword, sortBy]);
 
+            // 分析統計
             const analyticsData = useMemo(() => {
                 const catMap = {}, ownerMap = {};
                 let totalExpense = 0;
@@ -513,6 +529,7 @@
                     const total = calculateTaskTotal(t);
                     totalExpense += total;
                     catMap[t.category] = (catMap[t.category] || 0) + total;
+                    // 多成員平均分攤邏輯
                     const currentOwners = t.owners || (t.owner ? [t.owner] : []);
                     const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
                     currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
@@ -690,9 +707,16 @@
                                     <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">事項名稱</label><input className="w-full text-lg font-black" value={taskText} onChange={e => setTaskText(e.target.value)} placeholder="要做什麼？" required /></div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">成員 (多選)</label><button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
+                                            <div className="flex justify-between items-center mb-2">
+                                                <label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">成員 (多選)</label>
+                                                <button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button>
+                                            </div>
                                             <div className="flex flex-wrap gap-2">
-                                                {members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)}
+                                                {members.length === 0 ? (
+                                                    <p className="text-[10px] text-slate-300 font-bold py-2 italic">請點選管理新增成員</p>
+                                                ) : (
+                                                    members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)
+                                                )}
                                             </div>
                                         </div>
                                         <div>
@@ -702,55 +726,56 @@
                                     </div>
 
                                     {showMemberAdmin && (
-                                        <div className="p-4 bg-indigo-50/50 rounded-2xl border-2 border-indigo-100 border-dashed animate-fade-in">
+                                        <div className="p-4 bg-indigo-50/50 rounded-2xl border-2 border-indigo-100 border-dashed animate-fade-in shadow-inner">
+                                            <p className="text-[9px] font-bold text-indigo-400 mb-2 uppercase tracking-widest">維護成員名單 (拖曳排序)</p>
                                             <div className="flex flex-wrap gap-2 mb-4">
                                                 {members.map((m, idx) => (
                                                     <span key={m.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'member')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'member')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">
                                                         {m.name}
-                                                        <button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('members').doc(m.id).delete()} className="text-rose-300 hover:text-rose-500"><Icon name="x" size={10} /></button>
+                                                        <button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('members').doc(m.id).delete()} className="text-rose-300 hover:text-rose-500 transition-colors"><Icon name="x" size={10} /></button>
                                                     </span>
                                                 ))}
                                             </div>
                                             <div className="flex gap-2">
-                                                <input className="flex-grow !py-1 text-xs" placeholder="新成員姓名" value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} />
-                                                <button type="button" onClick={handleAddMember} className="bg-indigo-600 text-white px-4 rounded-xl text-xs font-black shadow-md">新增</button>
+                                                <input className="flex-grow !py-1 text-xs font-bold" placeholder="新成員姓名" value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} />
+                                                <button type="button" onClick={handleAddMember} className="bg-indigo-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-indigo-700 transition-all">新增</button>
                                             </div>
                                         </div>
                                     )}
 
                                     {showCatAdmin && (
-                                        <div className="p-4 bg-emerald-50/50 rounded-2xl border-2 border-emerald-100 border-dashed animate-fade-in">
-                                            <div className="flex flex-wrap gap-2 mb-4">{categories.map((cat, idx) => (<span key={cat.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'cat')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'cat')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">{cat.name}<button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').doc(cat.id).delete()} className="text-rose-300 hover:text-rose-500"><Icon name="x" size={10} /></button></span>))}</div>
-                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs" placeholder="新類別名稱" value={newCategoryName} onChange={e=>setNewCategoryName(e.target.value)} /><button type="button" onClick={()=>{ if(!newCategoryName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').add({name: newCategoryName.trim(), order: categories.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewCategoryName(''); }} className="bg-emerald-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-emerald-700 transition-colors">新增</button></div>
+                                        <div className="p-4 bg-emerald-50/50 rounded-2xl border-2 border-emerald-100 border-dashed animate-fade-in shadow-inner">
+                                            <div className="flex flex-wrap gap-2 mb-4">{categories.map((cat, idx) => (<span key={cat.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'cat')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'cat')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">{cat.name}<button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').doc(cat.id).delete()} className="text-rose-300 hover:text-rose-500 transition-colors"><Icon name="x" size={10} /></button></span>))}</div>
+                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs font-bold" placeholder="新類別名稱" value={newCategoryName} onChange={e=>setNewCategoryName(e.target.value)} /><button type="button" onClick={()=>{ if(!newCategoryName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').add({name: newCategoryName.trim(), order: categories.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewCategoryName(''); }} className="bg-emerald-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-emerald-700 transition-colors">新增</button></div>
                                         </div>
                                     )}
 
                                     <div>
                                         <label className="text-[10px] font-black text-emerald-600 uppercase mb-3 block tracking-widest">日期設定</label>
                                         <div className="flex gap-2 mb-3">{['single', 'range'].map(m => <button key={m} type="button" onClick={() => setDateMode(m)} className={`flex-1 py-2 rounded-xl text-xs font-black transition-all ${dateMode === m ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-emerald-500 border-emerald-100'}`}>{m === 'single' ? "單日" : "區間"}</button>)}</div>
-                                        <div className={`grid grid-cols-2 gap-3 p-4 bg-[#F9FBF2] rounded-2xl border transition-all ${isAddDateInvalid ? 'border-rose-400 shadow-[inset_0_0_10px_rgba(239,68,68,0.1)]' : 'border-emerald-50 shadow-inner'}`}>
-                                            <div><label className="text-[9px] text-slate-400 block mb-1">開始日期</label><input type="date" className="w-full !p-1 text-xs font-bold bg-transparent border-none" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
-                                            {dateMode === 'range' && <div><label className="text-[9px] text-slate-400 block mb-1">結束日期</label><input type="date" className="w-full !p-1 text-xs font-bold bg-transparent border-none" value={endDate} onChange={e => setEndDate(e.target.value)} /></div>}
+                                        <div className={`grid grid-cols-2 gap-3 p-4 bg-[#F9FBF2] rounded-[1.5rem] border transition-all ${isAddDateInvalid ? 'border-rose-400 shadow-[inset_0_0_10px_rgba(239,68,68,0.1)]' : 'border-emerald-50 shadow-inner'}`}>
+                                            <div><label className="text-[9px] text-slate-400 block mb-1 uppercase font-bold">開始日期</label><input type="date" className="w-full !p-1 text-xs font-black bg-transparent border-none" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
+                                            {dateMode === 'range' && <div><label className="text-[9px] text-slate-400 block mb-1 uppercase font-bold">結束日期</label><input type="date" className="w-full !p-1 text-xs font-black bg-transparent border-none" value={endDate} onChange={e => setEndDate(e.target.value)} /></div>}
                                         </div>
                                         {isAddDateInvalid && <div className="mt-2 text-center animate-bounce"><span className="date-error-badge"><Icon name="alert-triangle" size={12} /> 結束日期不能早於開始日期</span></div>}
                                     </div>
 
                                     <div>
                                         <div className="flex justify-between items-center mb-3"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">相關連結資源</label><button type="button" onClick={handleLinkAdd} className="text-[10px] text-indigo-500 font-bold underline">+ 新增連結</button></div>
-                                        <div className="space-y-2">{links.map((li, i) => (<div key={i} className="flex gap-2 items-center p-2 bg-white border rounded-xl animate-fade-in shadow-sm"><input className="w-24 !p-1.5 text-[11px] bg-slate-50 font-bold rounded-lg" placeholder="標籤" value={li.label} onChange={e => { const n = [...links]; n[i].label = e.target.value; setLinks(n); }} /><input className="flex-grow !p-1.5 text-[11px] bg-slate-50 text-indigo-500 font-black rounded-lg" placeholder="https://..." value={li.url} onChange={e => { const n = [...links]; n[i].url = e.target.value; setLinks(n); }} /><button type="button" onClick={() => setLinks(links.filter((_, idx) => idx !== i))} className="p-1 text-rose-300 hover:text-rose-500"><Icon name="trash-2" size={14} /></button></div>))}</div>
+                                        <div className="space-y-2">{links.map((li, i) => (<div key={i} className="flex gap-2 items-center p-2 bg-white border rounded-xl animate-fade-in shadow-sm"><input className="w-24 !p-1.5 text-[11px] bg-slate-50 font-bold rounded-lg" placeholder="標籤" value={li.label} onChange={e => { const n = [...links]; n[i].label = e.target.value; setLinks(n); }} /><input className="flex-grow !p-1.5 text-[11px] bg-slate-50 text-indigo-500 font-black rounded-lg" placeholder="https://..." value={li.url} onChange={e => { const n = [...links]; n[i].url = e.target.value; setLinks(n); }} /><button type="button" onClick={() => setLinks(links.filter((_, idx) => idx !== i))} className="p-1 text-rose-300 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={14} /></button></div>))}</div>
                                     </div>
 
                                     <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-3 block tracking-widest">圖片附件 (可多張或貼上)</label>
                                         <div onPaste={handlePaste} className="relative group border-2 border-dashed border-[#E9EED9] rounded-2xl p-4 bg-white hover:bg-emerald-50/30 transition-all flex flex-col items-center">
                                             <div className="flex flex-wrap gap-2 mb-3 w-full justify-center">
                                                 {images.map((img, idx) => (<div key={idx} className="relative group/item"><img src={img} className="img-preview shadow-sm" alt="預覽" /><button type="button" onClick={()=>setImages(images.filter((_, i)=>i!==idx))} className="absolute -top-2 -right-2 bg-white text-rose-500 rounded-full p-1 shadow-md border opacity-0 group-hover/item:opacity-100 transition-opacity"><Icon name="x" size={10} /></button></div>))}
-                                                <div className="w-20 h-20 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-center text-slate-300 hover:text-emerald-400 hover:border-emerald-400 transition-all cursor-pointer relative shadow-sm"><Icon name="image-plus" size={24} /><input type="file" accept="image/*" multiple onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" /></div>
+                                                <div className="w-20 h-20 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-center text-slate-300 hover:text-emerald-400 hover:border-emerald-400 transition-all cursor-pointer relative shadow-sm shadow-inner"><Icon name="image-plus" size={24} /><input type="file" accept="image/*" multiple onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" /></div>
                                             </div>
-                                            <p className="text-[9px] font-bold text-center text-slate-400 uppercase tracking-widest">點選加號上傳或在此 Ctrl+V 貼上截圖</p>
+                                            <p className="text-[9px] font-bold text-center text-slate-400 uppercase tracking-widest">點選加號上傳或 Ctrl+V 貼上圖片</p>
                                         </div>
                                     </div>
 
-                                    <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">詳細備註內容</label><textarea className="w-full min-h-[120px] text-sm font-bold bg-[#F9FBF2] rounded-2xl p-4 shadow-inner border-none" value={note} onChange={e => setNote(e.target.value)} placeholder="輸入筆記..." /></div>
+                                    <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">詳細備註內容</label><textarea className="w-full min-h-[120px] text-sm font-bold bg-[#F9FBF2] rounded-[1.5rem] shadow-inner border-none p-5" value={note} onChange={e => setNote(e.target.value)} placeholder="輸入細節或筆記..." /></div>
                                     
                                     <button type="submit" disabled={isProcessing || isAddDateInvalid} className={`w-full h-14 rounded-[1.5rem] font-black shadow-lg transition-all flex items-center justify-center gap-3 tracking-widest ${isAddDateInvalid ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none' : 'bg-emerald-600 text-white shadow-emerald-100 hover:bg-emerald-700 active:scale-[0.98]'}`}>
                                         {isProcessing ? <Icon name="loader" className="animate-spin" /> : <Icon name="sparkles" size={20} />}{editingId ? "儲存修改" : "新增事項"}
@@ -775,34 +800,37 @@
                     {expenseModalTask && (
                         <div className="modal-overlay flex items-center justify-center p-6 animate-in zoom-in-95 duration-200" onClick={() => setExpenseModalTask(null)}>
                             <div className="bg-white w-full max-w-md p-8 rounded-[2.5rem] shadow-2xl relative" onClick={e => e.stopPropagation()}>
-                                <div className="flex justify-between items-center mb-6"><h3 className="font-black flex items-center gap-3 text-slate-800"><div className="bg-amber-100 p-2 rounded-xl text-amber-600"><Icon name="coins" size={20} /></div> 費用細節維護</h3><button onClick={() => setExpenseModalTask(null)}><Icon name="x" size={20} className="text-slate-300" /></button></div>
+                                <div className="flex justify-between items-center mb-6"><h3 className="font-black flex items-center gap-3 text-slate-800"><div className="bg-amber-100 p-2 rounded-xl text-amber-600"><Icon name="coins" size={20} /></div> 費用細節維護</h3><button onClick={() => setExpenseModalTask(null)} className="p-1 hover:bg-slate-100 rounded-full transition-colors"><Icon name="x" size={20} className="text-slate-300" /></button></div>
                                 <div className="mb-4">
                                     <div className="flex justify-between items-center mb-2"><label className="text-[9px] font-black text-slate-400 uppercase tracking-wider">管理常用項目</label><button onClick={() => setShowExpItemAdmin(!showExpItemAdmin)} className="text-[9px] text-indigo-500 font-bold underline">{showExpItemAdmin ? "完成" : "管理"}</button></div>
                                     {showExpItemAdmin && (
                                         <div className="p-3 bg-amber-50/50 rounded-xl border border-amber-100 mb-3 animate-fade-in">
-                                            <div className="flex flex-wrap gap-1.5 mb-2">{expenseItems.map((item, idx) => (<span key={item.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'exp')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'exp')} className="bg-white border px-2 py-0.5 rounded-lg text-[9px] font-black flex items-center gap-1.5 drag-handle shadow-sm">{item.name}<button onClick={() => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').doc(item.id).delete()} className="text-rose-300 hover:text-rose-500"><Icon name="x" size={10} /></button></span>))}</div>
-                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-[10px] rounded-lg border-amber-100" placeholder="新項目名稱" value={newExpenseItemName} onChange={e => setNewExpenseItemName(e.target.value)} /><button onClick={()=>{ if(!newExpenseItemName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').add({name: newExpenseItemName.trim(), order: expenseItems.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewExpenseItemName(''); }} className="bg-amber-500 text-white px-3 rounded-lg text-[10px] font-black">新增</button></div>
+                                            <div className="flex flex-wrap gap-1.5 mb-2">{expenseItems.map((item, idx) => (<span key={item.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'exp')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'exp')} className="bg-white border px-2 py-0.5 rounded-lg text-[9px] font-black flex items-center gap-1.5 drag-handle shadow-sm">{item.name}<button onClick={() => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').doc(item.id).delete()} className="text-rose-300 hover:text-rose-500 transition-colors"><Icon name="x" size={10} /></button></span>))}</div>
+                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-[10px] rounded-lg border-amber-100 font-bold" placeholder="新項目名稱" value={newExpenseItemName} onChange={e => setNewExpenseItemName(e.target.value)} /><button onClick={()=>{ if(!newExpenseItemName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').add({name: newExpenseItemName.trim(), order: expenseItems.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewExpenseItemName(''); }} className="bg-amber-500 text-white px-3 rounded-lg text-[10px] font-black shadow hover:bg-amber-600 transition-all">新增</button></div>
                                         </div>
                                     )}
                                 </div>
-                                <div className="max-h-[40vh] overflow-y-auto pr-1 no-scrollbar mb-6 space-y-3">
+                                <div className="max-h-[40vh] overflow-y-auto pr-1 no-scrollbar mb-6 space-y-3 shadow-inner p-2 rounded-2xl bg-slate-50/50">
+                                    {modalExpenses.length === 0 && <div className="text-center py-10 text-slate-300 text-xs font-bold border-2 border-dashed border-slate-100 rounded-3xl">尚未紀錄費用</div>}
                                     {modalExpenses.map((ex, i) => (
-                                        <div key={i} className="p-4 bg-slate-50 rounded-2xl relative space-y-3 border border-slate-100 shadow-inner animate-fade-in">
+                                        <div key={i} className="p-4 bg-white rounded-[1.5rem] relative space-y-3 border border-slate-100 shadow-sm animate-fade-in">
                                             <div className="grid grid-cols-2 gap-3">
-                                                <input type="date" value={ex.date} onChange={e => { const n = [...modalExpenses]; n[i].date = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] font-black rounded-lg border-none" />
-                                                <input type="number" placeholder="金額" value={ex.amount} onChange={e => { const n = [...modalExpenses]; n[i].amount = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] font-black text-indigo-500 rounded-lg border-none" />
+                                                <input type="date" value={ex.date} onChange={e => { const n = [...modalExpenses]; n[i].date = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] font-black rounded-lg border-none bg-slate-50" />
+                                                <input type="number" placeholder="金額" value={ex.amount} onChange={e => { const n = [...modalExpenses]; n[i].amount = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] font-black text-indigo-600 rounded-lg border-none bg-slate-50" />
                                             </div>
                                             <div className="grid grid-cols-2 gap-3">
-                                                <select value={ex.item} onChange={e => { const n = [...modalExpenses]; n[i].item = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] font-black rounded-lg border-none"><option value="">選擇項目...</option>{expenseItems.map(opt => <option key={opt.id} value={opt.name}>{opt.name}</option>)}<option value="其他">其他</option></select>
-                                                <input placeholder="說明" value={ex.desc} onChange={e => { const n = [...modalExpenses]; n[i].desc = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] rounded-lg border-none" />
+                                                <select value={ex.item} onChange={e => { const n = [...modalExpenses]; n[i].item = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] font-black rounded-lg border-none bg-slate-50">
+                                                    <option value="">選擇項目...</option>{expenseItems.map(opt => <option key={opt.id} value={opt.name}>{opt.name}</option>)}<option value="其他">其他</option>
+                                                </select>
+                                                <input placeholder="備註" value={ex.desc} onChange={e => { const n = [...modalExpenses]; n[i].desc = e.target.value; setModalExpenses(n); }} className="w-full !p-1.5 text-[10px] rounded-lg border-none bg-slate-50" />
                                             </div>
-                                            <button onClick={() => setModalExpenses(modalExpenses.filter((_, idx) => idx !== i))} className="absolute -top-2 -right-2 bg-white text-rose-400 rounded-full p-1.5 shadow-md border"><Icon name="x" size={12} /></button>
+                                            <button onClick={() => setModalExpenses(modalExpenses.filter((_, idx) => idx !== i))} className="absolute -top-2 -right-2 bg-white text-rose-400 rounded-full p-1.5 shadow-md border hover:bg-rose-50 transition-colors"><Icon name="x" size={12} /></button>
                                         </div>
                                     ))}
                                 </div>
                                 <div className="flex gap-3">
-                                    <button onClick={() => setModalExpenses([{ date: new Date().toISOString().split('T')[0], item: '', desc: '', amount: '' }, ...modalExpenses])} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl text-xs font-black border border-slate-200">+ 增加費用</button>
-                                    <button onClick={async () => { if (!user) return; await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks').doc(expenseModalTask.id).update({ expenses: modalExpenses.filter(e => e.amount) }); setExpenseModalTask(null); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black shadow-lg shadow-indigo-100">儲存內容</button>
+                                    <button onClick={() => setModalExpenses([{ date: new Date().toISOString().split('T')[0], item: '', desc: '', amount: '' }, ...modalExpenses])} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl text-xs font-black border border-slate-200 hover:bg-slate-200 transition-all">+ 新增費用</button>
+                                    <button onClick={async () => { if (!user) return; await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks').doc(expenseModalTask.id).update({ expenses: modalExpenses.filter(e => e.amount) }); setExpenseModalTask(null); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">儲存內容</button>
                                 </div>
                             </div>
                         </div>
