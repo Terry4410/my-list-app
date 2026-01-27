@@ -178,21 +178,16 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // ==========================================
-        //  請注意：要在 GitHub Pages 上運作，您必須
-        //  將下方的 firebaseConfig 替換為您自己的專案設定！
-        // ==========================================
+        // Firebase 配置
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : { 
-                // ↓↓↓ 請將這裡替換為您自己的 Firebase Config ↓↓↓
-                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM", 
+                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM",
                 authDomain: "ghibli-list.firebaseapp.com",
                 projectId: "ghibli-list",
                 storageBucket: "ghibli-list.firebasestorage.app",
                 messagingSenderId: "730434760352",
                 appId: "1:730434760352:web:23190ab321a6261905e3c5"
-                // ↑↑↑ 預設的這組 Key 會限制網域，導致 GitHub 報錯 ↑↑↑
             };
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : "ghibli-pro-app";
@@ -255,7 +250,11 @@
             const [tasks, setTasks] = useState([]);
             const [categories, setCategories] = useState([]);
             const [expenseItems, setExpenseItems] = useState([]); 
-            const [members, setMembers] = useState([]);
+            // 修正重點1: 預設就帶入 Terry 與 Eric，確保介面上一開始就有選項
+            const [members, setMembers] = useState([
+                { id: 'default-1', name: 'Terry' },
+                { id: 'default-2', name: 'Eric' }
+            ]);
             const [loading, setLoading] = useState(true);
             const [activeTab, setActiveTab] = useState('list'); 
             const [sortBy, setSortBy] = useState('date_asc'); 
@@ -325,7 +324,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽 (使用 ISOString)
+                // 2. 類別監聽
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -338,7 +337,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽 (使用 ISOString)
+                // 3. 費用項目監聽
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -349,44 +348,38 @@
                     }
                 });
 
-                // 4. 成員監聽 (修復：自動建立 + 失敗時使用本地備案)
+                // 4. 成員監聽 (修正重點2: 資料庫為空時，自動保留/建立預設成員)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    setMembers(sorted);
+                    if (memberData.length > 0) {
+                         const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+                         setMembers(sorted);
+                    } else {
+                        // 資料庫是空的：保持預設的 Terry & Eric 顯示在畫面上
+                         setMembers([
+                            { id: 'default-1', name: 'Terry' },
+                            { id: 'default-2', name: 'Eric' }
+                        ]);
 
-                    // 如果資料庫是空的，且尚未初始化過，則嘗試寫入預設成員
-                    // 加入 !hasCheckedMembersInDb.current 鎖定，避免無窮迴圈
-                    if (snap.empty && !hasCheckedMembersInDb.current && !snap.metadata.fromCache) {
-                        hasCheckedMembersInDb.current = true;
-                        
-                        const batch = db.batch();
-                        ['Terry', 'Eric'].forEach((name, i) => {
-                            const ref = path.collection('members').doc();
-                            // 關鍵：使用 ISOString 避免錯誤
-                            batch.set(ref, { 
-                                name, 
-                                order: i, 
-                                createdAt: new Date().toISOString() 
+                        // 嘗試寫入資料庫 (僅執行一次，避免迴圈)
+                        if (!hasCheckedMembersInDb.current && !snap.metadata.fromCache) {
+                            hasCheckedMembersInDb.current = true;
+                            const batch = db.batch();
+                            ['Terry', 'Eric'].forEach((name, i) => {
+                                const ref = path.collection('members').doc();
+                                // 修正重點3: 使用 new Date().toISOString() 避免 serverTimestamp 錯誤
+                                batch.set(ref, { name, order: i, createdAt: new Date().toISOString() });
                             });
-                        });
-                        
-                        batch.commit().catch(err => {
-                            console.error("Initial Members DB Write Failed:", err);
-                            // 寫入失敗（例如權限問題）時的備案：直接在本地顯示，讓用戶能用
-                            setMembers([
-                                { id: 'local-1', name: 'Terry' },
-                                { id: 'local-2', name: 'Eric' }
-                            ]);
-                        });
+                            batch.commit().catch(err => console.error("Auto-create members failed (using local defaults):", err));
+                        }
                     }
                 }, err => {
                     console.error("Members Listener Error:", err);
-                    // 讀取完全失敗（例如權限問題）時的備案：直接在本地顯示
+                    // 發生錯誤時（如權限不足），強制顯示預設成員
                     setMembers([
-                        { id: 'local-1', name: 'Terry' },
-                        { id: 'local-2', name: 'Eric' }
+                        { id: 'default-1', name: 'Terry' },
+                        { id: 'default-2', name: 'Eric' }
                     ]);
                 });
 
@@ -396,7 +389,6 @@
             // 處理成員初始選取
             useEffect(() => {
                 if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
-                    // 預設選取 Terry，如果沒有則選第一個
                     const defaultOwner = members.find(m => m.name === 'Terry') ? 'Terry' : members[0].name;
                     setOwners([defaultOwner]);
                     hasInitializedOwners.current = true;
@@ -434,7 +426,6 @@
 
             const toggleOwner = (name) => {
                 if (owners.includes(name)) {
-                    // 允許取消選擇，除非是最後一個
                     if (owners.length > 1) setOwners(owners.filter(o => o !== name));
                 } else {
                     setOwners([...owners, name]);
@@ -445,31 +436,25 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    hasCheckedMembersInDb.current = true; 
-                    // 替換為 ISOString
+                    hasCheckedMembersInDb.current = true;
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
                         createdAt: new Date().toISOString()
                     });
                     setNewMemberName('');
-                } catch (err) { 
-                    console.error("Add Member Error:", err);
-                    alert("新增失敗 (可能為連線或權限問題)");
-                }
+                } catch (err) { console.error("Add Member Error:", err); }
             };
 
             const handleDeleteMember = async (id) => {
-                // 如果是本地備用成員，不執行刪除
-                if (id.startsWith('local')) {
-                    alert("這是預設成員，請先確認資料庫連線正常後再操作。");
+                // 防止刪除本地預設成員
+                if (id.startsWith('default-')) {
+                    alert("這是預設成員，無法刪除。請確認資料庫連線正常。");
                     return;
                 }
-
                 if (!confirm("確定要刪除這位成員嗎？")) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    hasCheckedMembersInDb.current = true;
                     await path.collection('members').doc(id).delete();
                 } catch (err) { console.error(err); }
             };
@@ -478,7 +463,6 @@
                 e.preventDefault();
                 if (!taskText.trim() || isProcessing || !user || isAddDateInvalid) return;
                 setIsProcessing(true);
-                // 替換為 ISOString
                 const data = {
                     text: taskText.trim(), owners, category, note, dateMode, startDate, endDate: dateMode === 'range' ? endDate : '',
                     images, links: links.filter(l => l.url.trim() !== ''),
@@ -487,7 +471,6 @@
                 try {
                     const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks');
                     if (editingId) await ref.doc(editingId).update(data);
-                    // 替換為 ISOString
                     else await ref.add({ ...data, completed: false, createdAt: new Date().toISOString() });
                     resetForm(); setActiveTab('list');
                 } catch (err) {
@@ -501,10 +484,9 @@
             const resetForm = () => {
                 setTaskText(''); setNote(''); setStartDate(''); setEndDate(''); setImages([]);
                 setLinks([{ label: '', url: '' }]); setEditingId(null); setDateMode('single'); 
-                // 重置時預設選取 Terry
                 if (members.length > 0) {
-                     const defaultOwner = members.find(m => m.name === 'Terry') ? 'Terry' : members[0].name;
-                     setOwners([defaultOwner]);
+                    const defaultOwner = members.find(m => m.name === 'Terry') ? 'Terry' : members[0].name;
+                    setOwners([defaultOwner]);
                 }
             };
 
@@ -536,8 +518,8 @@
                 list.splice(dropIndex, 0, movedItem);
                 const collectionName = type === 'cat' ? 'categories' : type === 'exp' ? 'expenseItems' : 'members';
                 
-                // 如果是本地成員，不執行拖曳排序的 DB 寫入
-                if (list.some(i => i.id.startsWith('local'))) return;
+                // 如果是本地預設成員，不執行資料庫更新
+                if (list.some(i => i.id.startsWith('default-'))) return;
 
                 const batch = db.batch();
                 list.forEach((item, idx) => {
@@ -576,9 +558,7 @@
                 sortedTasks.forEach(t => {
                     const total = calculateTaskTotal(t);
                     totalExpense += total;
-                    catMap[t.category] = (catMap[t.category] || 0) + total;
                     const currentOwners = t.owners || (t.owner ? [t.owner] : []);
-                    // 平分邏輯：若有選取成員則平分，否則歸類為 total
                     const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
                     currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
                 });
