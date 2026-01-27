@@ -178,16 +178,21 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // Firebase 配置
+        // ==========================================
+        //  請注意：要在 GitHub Pages 上運作，您必須
+        //  將下方的 firebaseConfig 替換為您自己的專案設定！
+        // ==========================================
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : { 
-                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM",
+                // ↓↓↓ 請將這裡替換為您自己的 Firebase Config ↓↓↓
+                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM", 
                 authDomain: "ghibli-list.firebaseapp.com",
                 projectId: "ghibli-list",
                 storageBucket: "ghibli-list.firebasestorage.app",
                 messagingSenderId: "730434760352",
                 appId: "1:730434760352:web:23190ab321a6261905e3c5"
+                // ↑↑↑ 預設的這組 Key 會限制網域，導致 GitHub 報錯 ↑↑↑
             };
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : "ghibli-pro-app";
@@ -344,7 +349,7 @@
                     }
                 });
 
-                // 4. 成員監聽 (恢復 Terry & Eric 自動建立邏輯，但使用 ISOString 以避免錯誤)
+                // 4. 成員監聽 (已恢復：Terry & Eric 自動建立邏輯，使用 ISOString)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
@@ -352,7 +357,6 @@
                     setMembers(sorted);
 
                     // 如果資料庫是空的，且尚未初始化過，則寫入預設成員
-                    // 使用 ISOString 替代 serverTimestamp 以解決權限/格式錯誤
                     if (snap.empty && !hasCheckedMembersInDb.current && !snap.metadata.fromCache) {
                         hasCheckedMembersInDb.current = true;
                         const batch = db.batch();
@@ -361,7 +365,7 @@
                             batch.set(ref, { 
                                 name, 
                                 order: i, 
-                                createdAt: new Date().toISOString() // 關鍵修正：使用字串時間
+                                createdAt: new Date().toISOString() // 使用字串時間避免錯誤
                             });
                         });
                         batch.commit().catch(err => console.error("Initial Members error:", err));
@@ -412,7 +416,7 @@
 
             const toggleOwner = (name) => {
                 if (owners.includes(name)) {
-                    // 允許取消選擇，除非是最後一個 (為了 UX，通常保留至少一個，但如果為了完全自由可拿掉 if)
+                    // 允許取消選擇，除非是最後一個
                     if (owners.length > 1) setOwners(owners.filter(o => o !== name));
                 } else {
                     setOwners([...owners, name]);
@@ -424,7 +428,6 @@
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
                     hasCheckedMembersInDb.current = true; // 防止自動初始化干擾
-                    // 使用 ISOString
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
@@ -546,6 +549,7 @@
                     totalExpense += total;
                     catMap[t.category] = (catMap[t.category] || 0) + total;
                     const currentOwners = t.owners || (t.owner ? [t.owner] : []);
+                    // 平分邏輯：若有選取成員則平分，否則歸類為 total
                     const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
                     currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
                 });
