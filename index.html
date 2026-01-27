@@ -319,7 +319,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽 (修改：移除 serverTimestamp，改用 ISOString)
+                // 2. 類別監聽
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -332,7 +332,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽 (修改：移除 serverTimestamp，改用 ISOString)
+                // 3. 費用項目監聽
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -348,7 +348,7 @@
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 單純更新本地狀態，不做任何預設值寫入，也不要自動建立 Terry/Eric
+                    // 無論數據如何，直接更新本地狀態，絕不自動新增任何成員
                     setMembers(sorted);
                 }, err => console.error("Members Listener Error:", err));
 
@@ -404,7 +404,6 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    // 使用 ISOString 替代 serverTimestamp 避免錯誤
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
@@ -429,7 +428,6 @@
                 e.preventDefault();
                 if (!taskText.trim() || isProcessing || !user || isAddDateInvalid) return;
                 setIsProcessing(true);
-                // 使用 ISOString 替代 serverTimestamp
                 const data = {
                     text: taskText.trim(), owners, category, note, dateMode, startDate, endDate: dateMode === 'range' ? endDate : '',
                     images, links: links.filter(l => l.url.trim() !== ''),
@@ -437,7 +435,6 @@
                 };
                 try {
                     const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks');
-                    // 使用 ISOString
                     if (editingId) await ref.doc(editingId).update(data);
                     else await ref.add({ ...data, completed: false, createdAt: new Date().toISOString() });
                     resetForm(); setActiveTab('list');
