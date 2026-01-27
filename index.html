@@ -343,26 +343,29 @@
                     }
                 });
 
-                // 4. 成員監聽 (修復：移除 Metadata 嚴格判斷，確保資料即時顯示)
+                // 4. 成員監聽 (修復：移除 Metadata 嚴格判斷，並確保清單始終更新)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    if (d.length === 0) {
+                    
+                    // 無論長度是否為 0，都先更新本地狀態，防止新增後不顯示
+                    const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+                    setMembers(sorted);
+
+                    // 僅在資料庫確實為空且非快取狀態時初始化預設成員
+                    if (d.length === 0 && !snap.metadata.fromCache) {
                         const batch = db.batch();
                         ['Terry', 'Eric'].forEach((name, i) => {
                             const ref = path.collection('members').doc();
                             batch.set(ref, { name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
                         });
                         batch.commit();
-                    } else {
-                        const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
-                        setMembers(sorted);
                     }
                 }, err => console.error("Members Listener Error:", err));
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
 
-            // 處理成員初始選取
+            // 處理成員初始選取，僅執行一次
             useEffect(() => {
                 if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
                     setOwners([members[0].name]);
@@ -438,7 +441,7 @@
                     resetForm(); setActiveTab('list');
                 } catch (err) {
                     console.error("Save Error:", err);
-                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多超過容量限制，請減少圖片。");
+                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多超過容量限制，請減少圖片或備註內容。");
                     else alert("儲存失敗");
                 }
                 setIsProcessing(false);
@@ -507,30 +510,6 @@
                 return res;
             }, [tasks, filterCat, filterOwner, filterExpItem, filterStartDate, filterEndDate, filterKeyword, sortBy]);
 
-            // 分析統計
-            const analyticsData = useMemo(() => {
-                const catMap = {}, ownerMap = {};
-                let totalExpense = 0;
-                sortedTasks.forEach(t => {
-                    const total = calculateTaskTotal(t);
-                    totalExpense += total;
-                    catMap[t.category] = (catMap[t.category] || 0) + total;
-                    const currentOwners = t.owners || (t.owner ? [t.owner] : []);
-                    const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
-                    currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
-                });
-                const sortedCats = Object.entries(catMap).sort((a,b) => b[1] - a[1]);
-                const sortedOwners = Object.entries(ownerMap).sort((a,b) => b[1] - a[1]);
-                const colorMap = {};
-                let colorIndex = 0;
-                [...sortedCats, ...sortedOwners].forEach(([name]) => {
-                    if (!colorMap[name]) { colorMap[name] = GHIBLI_COLORS[colorIndex % GHIBLI_COLORS.length]; colorIndex++; }
-                });
-                return { sortedCats, sortedOwners, totalExpense, colorMap };
-            }, [sortedTasks]);
-
-            const { sortedCats, sortedOwners, totalExpense, colorMap } = analyticsData;
-
             useEffect(() => {
                 if (activeTab !== 'analytics' || sortedTasks.length === 0) return;
                 const timer = setTimeout(() => {
@@ -565,6 +544,30 @@
                 }, 100);
                 return () => clearTimeout(timer);
             }, [activeTab, sortedTasks]);
+
+            const analyticsData = useMemo(() => {
+                if (activeTab !== 'analytics') return { sortedCats: [], sortedOwners: [], totalExpense: 0, colorMap: {} };
+                const catMap = {}, ownerMap = {};
+                let totalExpense = 0;
+                sortedTasks.forEach(t => {
+                    const total = calculateTaskTotal(t);
+                    totalExpense += total;
+                    catMap[t.category] = (catMap[t.category] || 0) + total;
+                    const currentOwners = t.owners || (t.owner ? [t.owner] : []);
+                    const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
+                    currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
+                });
+                const sortedCats = Object.entries(catMap).sort((a,b) => b[1] - a[1]);
+                const sortedOwners = Object.entries(ownerMap).sort((a,b) => b[1] - a[1]);
+                const colorMap = {};
+                let colorIndex = 0;
+                [...sortedCats, ...sortedOwners].forEach(([name]) => {
+                    if (!colorMap[name]) { colorMap[name] = GHIBLI_COLORS[colorIndex % GHIBLI_COLORS.length]; colorIndex++; }
+                });
+                return { sortedCats, sortedOwners, totalExpense, colorMap };
+            }, [activeTab, sortedTasks]);
+
+            const { sortedCats, sortedOwners, totalExpense, colorMap } = analyticsData;
 
             const renderProgressList = (dataList, total) => {
                 if (total === 0) return <div className="text-center text-slate-300 text-xs py-4 font-bold">尚無支出資料</div>;
@@ -613,7 +616,7 @@
                                                 onKeyDown={e => e.key === 'Enter' && setFilterKeyword(tempKeyword)} placeholder="關鍵字..." className="w-full bg-transparent border-none text-[11px] font-black p-2 outline-none" />
                                             <button onClick={() => setFilterKeyword(tempKeyword)} className="p-1.5 text-emerald-500 hover:text-emerald-700 transition-colors"><Icon name="search" size={16} /></button>
                                         </div>
-                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm">清空篩選</button>
+                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm hover:bg-rose-100 transition-colors">清空篩選</button>
                                     </div>
                                     <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 z-10">
                                         <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">類別篩選</option>{categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
@@ -664,7 +667,7 @@
                                             {isExpanded && (
                                                 <div className="mt-4 pt-4 border-t border-slate-50 space-y-4 animate-in slide-in-from-top-2">
                                                     {t.note && <div className="text-sm text-slate-500 bg-[#FDFCF0] p-4 rounded-xl whitespace-pre-line border border-[#E9EED9]">{t.note}</div>}
-                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件" />)}</div>}
+                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件圖片" />)}</div>}
                                                     {t.links && t.links.length > 0 && <div className="flex flex-wrap gap-2">{t.links.map((l, i) => <a key={i} href={l.url} target="_blank" className="text-[10px] bg-white border border-emerald-100 text-emerald-600 px-3 py-1.5 rounded-lg font-bold flex items-center gap-2"><Icon name="link" size={10} /> {l.label || "連結"}</a>)}</div>}
                                                     {t.expenses && t.expenses.length > 0 && (
                                                         <div className="bg-amber-50/30 p-3 rounded-xl">
@@ -692,7 +695,7 @@
                                     <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">事項名稱</label><input className="w-full text-lg font-black" value={taskText} onChange={e => setTaskText(e.target.value)} placeholder="要做什麼？" required /></div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">歸屬成員 (可多選)</label><button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
+                                            <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">成員 (多選)</label><button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
                                             <div className="flex flex-wrap gap-2">
                                                 {members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)}
                                             </div>
@@ -792,14 +795,14 @@
                                     ))}
                                 </div>
                                 <div className="flex gap-3">
-                                    <button onClick={() => setModalExpenses([{ date: new Date().toISOString().split('T')[0], item: '', desc: '', amount: '' }, ...modalExpenses])} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl text-xs font-black border border-slate-200">+ 增加費用</button>
+                                    <button onClick={() => setModalExpenses([{ date: new Date().toISOString().split('T')[0], item: '', desc: '', amount: '' }, ...modalExpenses])} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl text-xs font-black border border-slate-200">+ 增加費用</button>
                                     <button onClick={async () => { if (!user) return; await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks').doc(expenseModalTask.id).update({ expenses: modalExpenses.filter(e => e.amount) }); setExpenseModalTask(null); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl text-xs font-black shadow-lg shadow-indigo-100">儲存內容</button>
                                 </div>
                             </div>
                         </div>
                     )}
 
-                    <nav className="fixed bottom-0 left-0 right-0 nav-standard h-20 flex items-center z-40 px-6 shadow-[0_-10px_30px_rgba(74_124,89,0.05)]">
+                    <nav className="fixed bottom-0 left-0 right-0 nav-standard h-20 flex items-center z-40 px-6 shadow-[0_-10px_30px_rgba(74,124,89,0.05)]">
                         <div className="max-w-xl mx-auto w-full grid grid-cols-4 gap-2 text-center font-black">
                             <button onClick={() => setActiveTab('list')} className={`flex flex-col items-center justify-center gap-1 transition-all duration-300 ${activeTab === 'list' ? 'nav-active' : 'text-slate-300'}`}><Icon name="layout-list" size={24} /><span className="text-[10px]">清單</span></button>
                             <button onClick={() => { resetForm(); setActiveTab('add'); }} className={`flex flex-col items-center justify-center gap-1 transition-all duration-300 ${activeTab === 'add' ? 'nav-active' : 'text-slate-300'}`}><Icon name="plus-square" size={24} /><span className="text-[10px]">新增</span></button>
