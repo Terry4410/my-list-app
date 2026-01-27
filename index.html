@@ -325,7 +325,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽 (替換 serverTimestamp 為 ISOString)
+                // 2. 類別監聽 (使用 ISOString)
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -338,7 +338,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽 (替換 serverTimestamp 為 ISOString)
+                // 3. 費用項目監聽 (使用 ISOString)
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -354,35 +354,40 @@
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 如果 DB 有資料，就用 DB 的；如果完全沒資料且初始化失敗，就強制顯示 Terry & Eric
-                    if (sorted.length > 0) {
-                        setMembers(sorted);
-                    } else {
-                        // 嘗試初始化 DB
-                        if (!hasCheckedMembersInDb.current && !snap.metadata.fromCache) {
-                            hasCheckedMembersInDb.current = true;
-                            const batch = db.batch();
-                            ['Terry', 'Eric'].forEach((name, i) => {
-                                const ref = path.collection('members').doc();
-                                // 關鍵：使用 ISOString 避免錯誤
-                                batch.set(ref, { name, order: i, createdAt: new Date().toISOString() });
-                            });
-                            // 即使寫入失敗，也要讓使用者能看到預設成員
-                            batch.commit().catch(err => {
-                                console.error("Auto-create members failed (likely permission):", err);
-                                setMembers([{id:'local1', name:'Terry'}, {id:'local2', name:'Eric'}]);
-                            });
-                        }
+                    setMembers(sorted);
+
+                    // 如果資料庫是空的，且尚未初始化過，則嘗試寫入預設成員
+                    // 加入 !hasCheckedMembersInDb.current 鎖定，避免無窮迴圈
+                    if (snap.empty && !hasCheckedMembersInDb.current && !snap.metadata.fromCache) {
+                        hasCheckedMembersInDb.current = true;
                         
-                        // 若 DB 真的空或讀取中，先顯示預設成員讓介面不壞掉
-                        if (sorted.length === 0) {
-                            setMembers([{id:'local1', name:'Terry'}, {id:'local2', name:'Eric'}]);
-                        }
+                        const batch = db.batch();
+                        ['Terry', 'Eric'].forEach((name, i) => {
+                            const ref = path.collection('members').doc();
+                            // 關鍵：使用 ISOString 避免錯誤
+                            batch.set(ref, { 
+                                name, 
+                                order: i, 
+                                createdAt: new Date().toISOString() 
+                            });
+                        });
+                        
+                        batch.commit().catch(err => {
+                            console.error("Initial Members DB Write Failed:", err);
+                            // 寫入失敗（例如權限問題）時的備案：直接在本地顯示，讓用戶能用
+                            setMembers([
+                                { id: 'local-1', name: 'Terry' },
+                                { id: 'local-2', name: 'Eric' }
+                            ]);
+                        });
                     }
                 }, err => {
                     console.error("Members Listener Error:", err);
-                    // 讀取完全失敗（例如權限不足），直接給本地備案
-                    setMembers([{id:'local1', name:'Terry'}, {id:'local2', name:'Eric'}]);
+                    // 讀取完全失敗（例如權限問題）時的備案：直接在本地顯示
+                    setMembers([
+                        { id: 'local-1', name: 'Terry' },
+                        { id: 'local-2', name: 'Eric' }
+                    ]);
                 });
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
@@ -648,6 +653,40 @@
                 );
             };
 
+            const renderFilters = () => (
+                <div className="flex flex-col gap-4 mb-8 bg-white p-6 rounded-[2rem] border-2 border-[#E9EED9] shadow-sm relative overflow-hidden animate-fade-in">
+                    <Icon name="wind" className="absolute -top-2 -right-2 text-emerald-50 opacity-50" size={60} />
+                    <div className="flex items-center justify-between gap-2 z-10">
+                        <div className="w-[280px] flex items-center bg-[#F9FBF2] rounded-full px-4 border border-[#E9EED9] shadow-inner">
+                            <input type="text" value={tempKeyword} onChange={e => setTempKeyword(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && setFilterKeyword(tempKeyword)} placeholder="關鍵字..." className="w-full bg-transparent border-none text-[11px] font-black p-2 outline-none" />
+                            <button onClick={() => setFilterKeyword(tempKeyword)} className="p-1.5 text-emerald-500 hover:text-emerald-700 transition-colors"><Icon name="search" size={16} /></button>
+                        </div>
+                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm">清空篩選</button>
+                    </div>
+                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 z-10">
+                        <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">類別篩選</option>{categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
+                        <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]">
+                            <option value="All">成員選擇</option>
+                            {members.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
+                        </select>
+                        <select value={filterExpItem} onChange={e => setFilterExpItem(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">費用篩選</option>{expenseItems.map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
+                        <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="date_asc">日期舊至新</option><option value="date_desc">日期新至舊</option></select>
+                    </div>
+                    <div className="flex flex-col gap-1 pt-3 border-t border-[#F1F5E9] z-10">
+                        <div className="flex items-center gap-2">
+                            <Icon name="calendar" size={14} className="text-emerald-600" />
+                            <div className="flex items-center gap-2 w-full font-black">
+                                <input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} className={`text-xs w-full bg-[#F9FBF2] border-none !p-1.5 rounded-lg ${isFilterDateInvalid ? 'ring-2 ring-rose-300' : ''}`} />
+                                <span className="text-emerald-200">~</span>
+                                <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} className={`text-xs w-full bg-[#F9FBF2] border-none !p-1.5 rounded-lg ${isFilterDateInvalid ? 'ring-2 ring-rose-300' : ''}`} />
+                            </div>
+                        </div>
+                        {isFilterDateInvalid && <div className="mt-1 flex justify-center"><span className="date-error-badge"><Icon name="alert-circle" size={12} /> 結束日期不可早於開始日期</span></div>}
+                    </div>
+                </div>
+            );
+
             return (
                 <div className="max-w-2xl mx-auto min-h-screen flex flex-col bg-[#FDFCF0]">
                     <header className="ghibli-header px-6 py-8 flex flex-col items-center justify-center sticky top-0 z-30 shadow-md">
@@ -661,40 +700,10 @@
                     </header>
 
                     <main className="flex-grow px-5 py-6 pb-36">
+                        {['list', 'history', 'analytics'].includes(activeTab) && renderFilters()}
+
                         {activeTab === 'list' || activeTab === 'history' ? (
                             <div className="animate-fade-in">
-                                <div className="flex flex-col gap-4 mb-8 bg-white p-6 rounded-[2rem] border-2 border-[#E9EED9] shadow-sm relative overflow-hidden">
-                                    <Icon name="wind" className="absolute -top-2 -right-2 text-emerald-50 opacity-50" size={60} />
-                                    <div className="flex items-center justify-between gap-2 z-10">
-                                        <div className="w-[280px] flex items-center bg-[#F9FBF2] rounded-full px-4 border border-[#E9EED9] shadow-inner">
-                                            <input type="text" value={tempKeyword} onChange={e => setTempKeyword(e.target.value)}
-                                                onKeyDown={e => e.key === 'Enter' && setFilterKeyword(tempKeyword)} placeholder="關鍵字..." className="w-full bg-transparent border-none text-[11px] font-black p-2 outline-none" />
-                                            <button onClick={() => setFilterKeyword(tempKeyword)} className="p-1.5 text-emerald-500 hover:text-emerald-700 transition-colors"><Icon name="search" size={16} /></button>
-                                        </div>
-                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm">清空篩選</button>
-                                    </div>
-                                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 z-10">
-                                        <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">類別篩選</option>{categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
-                                        <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]">
-                                            <option value="All">成員選擇</option>
-                                            {members.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
-                                        </select>
-                                        <select value={filterExpItem} onChange={e => setFilterExpItem(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">費用篩選</option>{expenseItems.map(item => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
-                                        <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="date_asc">日期舊至新</option><option value="date_desc">日期新至舊</option></select>
-                                    </div>
-                                    <div className="flex flex-col gap-1 pt-3 border-t border-[#F1F5E9] z-10">
-                                        <div className="flex items-center gap-2">
-                                            <Icon name="calendar" size={14} className="text-emerald-600" />
-                                            <div className="flex items-center gap-2 w-full font-black">
-                                                <input type="date" value={filterStartDate} onChange={e => setFilterStartDate(e.target.value)} className={`text-xs w-full bg-[#F9FBF2] border-none !p-1.5 rounded-lg ${isFilterDateInvalid ? 'ring-2 ring-rose-300' : ''}`} />
-                                                <span className="text-emerald-200">~</span>
-                                                <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} className={`text-xs w-full bg-[#F9FBF2] border-none !p-1.5 rounded-lg ${isFilterDateInvalid ? 'ring-2 ring-rose-300' : ''}`} />
-                                            </div>
-                                        </div>
-                                        {isFilterDateInvalid && <div className="mt-1 flex justify-center"><span className="date-error-badge"><Icon name="alert-circle" size={12} /> 結束日期不可早於開始日期</span></div>}
-                                    </div>
-                                </div>
-
                                 {sortedTasks.filter(t => (activeTab === 'list' ? !t.completed : t.completed)).map(t => {
                                     const isExpanded = expandedHistory[t.id];
                                     const total = calculateTaskTotal(t);
