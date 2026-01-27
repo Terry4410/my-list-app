@@ -252,6 +252,7 @@
             const [expenseItems, setExpenseItems] = useState([]); 
             const [members, setMembers] = useState([]);
             const [loading, setLoading] = useState(true);
+            const [loadingMembers, setLoadingMembers] = useState(true); // 新增成員加載狀態
             const [activeTab, setActiveTab] = useState('list'); 
             const [sortBy, setSortBy] = useState('date_asc'); 
             const [filterCat, setFilterCat] = useState('All');
@@ -286,9 +287,10 @@
             const [newExpenseItemName, setNewExpenseItemName] = useState('');
             const [newMemberName, setNewMemberName] = useState('');
 
-            // 初始化與防閃爍標記
+            // 防閃爍標記：只在組件生命週期內執行一次預設選取
             const hasInitializedOwners = useRef(false);
-            const autoInitDone = useRef(false);
+            // 初始化標記：防止刪除後 Terry/Eric 自動跑回來
+            const initializationAttempted = useRef(false);
 
             // 日期驗證邏輯
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
@@ -344,28 +346,34 @@
                     }
                 });
 
-                // 4. 成員監聽 (修正：移除 metadata 強制初始化，改為手動一次性檢查)
+                // 4. 成員監聽 (修復版本：解決 Peter 消失與 Terry/Eric 無法刪除問題)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+                    
+                    // 先同步目前的成員資料（無論是否為空）
                     setMembers(sorted);
+                    setLoadingMembers(false);
 
-                    // 僅在第一次打開網頁、確定沒資料且尚未執行過 autoInit 時執行
-                    if (memberData.length === 0 && !autoInitDone.current && !snap.metadata.fromCache) {
-                        autoInitDone.current = true;
+                    // 僅在「全新資料庫」（沒人且未曾嘗試初始化）的情況下，寫入預設成員
+                    if (memberData.length === 0 && !initializationAttempted.current && !snap.metadata.fromCache) {
+                        initializationAttempted.current = true;
                         const batch = db.batch();
                         ['Terry', 'Eric'].forEach((name, i) => {
                             const ref = path.collection('members').doc();
                             batch.set(ref, { name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
                         });
-                        batch.commit();
+                        batch.commit().catch(console.error);
                     }
+                }, err => {
+                    console.error("Members Listener Error:", err);
+                    setLoadingMembers(false);
                 });
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
 
-            // 處理成員初始選取，僅執行一次
+            // 處理成員初始選取：僅在名單載入後執行一次，避免閃爍
             useEffect(() => {
                 if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
                     setOwners([members[0].name]);
@@ -414,8 +422,8 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    // 標記已手動處理，防止自動補回 Terry/Eric
-                    autoInitDone.current = true;
+                    // 設定初始化標記為 true，防止新增 Peter 時，Terry/Eric 又跑出來
+                    initializationAttempted.current = true;
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
@@ -429,7 +437,8 @@
                 if (!confirm("確定要刪除這位成員嗎？")) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    autoInitDone.current = true; // 防止刪除後又自動跳出 Terry/Eric
+                    // 設定標記，確保刪除後不會觸發自動初始化邏輯
+                    initializationAttempted.current = true;
                     await path.collection('members').doc(id).delete();
                 } catch (err) { console.error(err); }
             };
@@ -450,7 +459,7 @@
                     resetForm(); setActiveTab('list');
                 } catch (err) {
                     console.error("Save Error:", err);
-                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多，請減少附件。");
+                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多容量超出 1MB 限制，請減少附件。");
                     else alert("儲存失敗");
                 }
                 setIsProcessing(false);
@@ -464,7 +473,7 @@
 
             const startEdit = (t) => {
                 setTaskText(t.text); 
-                // 相容舊格式：若 owners 不存在，則使用舊的單一 owner
+                // 相容歷史單一 owner 格式
                 setOwners(t.owners || (t.owner ? [t.owner] : (members.length > 0 ? [members[0].name] : []))); 
                 setCategory(t.category); setNote(t.note || '');
                 setStartDate(t.startDate || ''); setEndDate(t.endDate || ''); setImages(t.images || []);
@@ -503,6 +512,7 @@
             const sortedTasks = useMemo(() => {
                 let res = [...tasks];
                 if (filterCat !== 'All') res = res.filter(t => t.category === filterCat);
+                // 篩選邏輯同時考慮新舊格式
                 if (filterOwner !== 'All') res = res.filter(t => (t.owners || []).includes(filterOwner) || t.owner === filterOwner);
                 if (filterExpItem !== 'All') res = res.filter(t => (t.expenses || []).some(e => e.item === filterExpItem));
                 if (filterStartDate) res = res.filter(t => (t.startDate || '0000-00-00') >= filterStartDate);
@@ -676,7 +686,7 @@
                                             {isExpanded && (
                                                 <div className="mt-4 pt-4 border-t border-slate-50 space-y-4 animate-in slide-in-from-top-2">
                                                     {t.note && <div className="text-sm text-slate-500 bg-[#FDFCF0] p-4 rounded-xl whitespace-pre-line border border-[#E9EED9]">{t.note}</div>}
-                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件" />)}</div>}
+                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件圖片" />)}</div>}
                                                     {t.links && t.links.length > 0 && <div className="flex flex-wrap gap-2">{t.links.map((l, i) => <a key={i} href={l.url} target="_blank" className="text-[10px] bg-white border border-emerald-100 text-emerald-600 px-3 py-1.5 rounded-lg font-bold flex items-center gap-2"><Icon name="link" size={10} /> {l.label || "連結"}</a>)}</div>}
                                                     {t.expenses && t.expenses.length > 0 && (
                                                         <div className="bg-amber-50/30 p-3 rounded-xl">
@@ -709,7 +719,9 @@
                                                 <button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button>
                                             </div>
                                             <div className="flex flex-wrap gap-2">
-                                                {members.length === 0 ? (
+                                                {loadingMembers ? (
+                                                    <span className="animate-spin text-indigo-300"><Icon name="loader" size={16} /></span>
+                                                ) : members.length === 0 ? (
                                                     <p className="text-[10px] text-slate-300 font-bold py-2 italic tracking-tighter">請點選管理新增成員</p>
                                                 ) : (
                                                     members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)
