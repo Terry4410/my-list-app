@@ -319,7 +319,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽 (修正：使用 ISOString 替代 serverTimestamp)
+                // 2. 類別監聽 (修復：使用 new Date().toISOString())
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -332,7 +332,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽 (修正：使用 ISOString 替代 serverTimestamp)
+                // 3. 費用項目監聽 (修復：使用 new Date().toISOString())
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -343,12 +343,12 @@
                     }
                 });
 
-                // 4. 成員監聽 (修正：徹底移除預設成員 Terry/Eric 的自動建立邏輯)
+                // 4. 成員監聽 (乾淨版：完全移除預設成員邏輯)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 單純更新本地狀態，不做任何預設值寫入
+                    // 無論數據如何，直接更新本地狀態，不再自動寫入任何資料
                     setMembers(sorted);
                 }, err => console.error("Members Listener Error:", err));
 
@@ -404,16 +404,16 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    // 使用 ISOString 替代 serverTimestamp 避免錯誤
+                    // 修復：使用 new Date().toISOString()
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
-                        createdAt: new Date().toISOString() 
+                        createdAt: new Date().toISOString()
                     });
                     setNewMemberName('');
                 } catch (err) { 
                     console.error("Add Member Error:", err);
-                    alert("新增失敗，請檢查連線或稍後再試。");
+                    alert("新增成員失敗，請檢查連線。");
                 }
             };
 
@@ -429,15 +429,17 @@
                 e.preventDefault();
                 if (!taskText.trim() || isProcessing || !user || isAddDateInvalid) return;
                 setIsProcessing(true);
+                // 修復：使用 new Date().toISOString()
                 const data = {
                     text: taskText.trim(), owners, category, note, dateMode, startDate, endDate: dateMode === 'range' ? endDate : '',
                     images, links: links.filter(l => l.url.trim() !== ''),
-                    updatedAt: new Date().toISOString() // 使用 ISOString
+                    updatedAt: new Date().toISOString()
                 };
                 try {
                     const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks');
+                    // 修復：使用 new Date().toISOString()
                     if (editingId) await ref.doc(editingId).update(data);
-                    else await ref.add({ ...data, completed: false, createdAt: new Date().toISOString() }); // 使用 ISOString
+                    else await ref.add({ ...data, completed: false, createdAt: new Date().toISOString() });
                     resetForm(); setActiveTab('list');
                 } catch (err) {
                     console.error("Save Error:", err);
