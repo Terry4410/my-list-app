@@ -310,36 +310,51 @@
                 if (!user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 
+                // Tasks 監聽
                 const unsubTasks = path.collection('tasks').onSnapshot(snap => {
+                    if (snap.metadata.hasPendingWrites) return;
                     setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                     setLoading(false);
                 });
 
+                // Categories 監聽
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
+                    if (snap.metadata.hasPendingWrites) return;
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
                         ['日常', '學習', '美食', '旅遊', '健康'].forEach((name, i) => 
                             path.collection('categories').add({ name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+                    } else {
+                        const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+                        setCategories(sorted);
+                        if (sorted.length > 0 && !category) setCategory(sorted[0].name);
                     }
-                    const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
-                    setCategories(sorted);
-                    if (sorted.length > 0 && !category) setCategory(sorted[0].name);
                 });
 
+                // Expense Items 監聽
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
+                    if (snap.metadata.hasPendingWrites) return;
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
                         ['交通', '住宿', '門票', '餐費', '購物'].forEach((name, i) => 
                             path.collection('expenseItems').add({ name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+                    } else {
+                        setExpenseItems(d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0)));
                     }
-                    setExpenseItems(d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0)));
                 });
 
+                // Members 監聽 - 增加 meta 檢查與初始化穩定化
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
+                    if (snap.metadata.hasPendingWrites) return;
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
-                        ['Terry', 'Eric'].forEach((name, i) => 
-                            path.collection('members').add({ name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+                        // 初始化動作只執行一次
+                        const batch = db.batch();
+                        ['Terry', 'Eric'].forEach((name, i) => {
+                            const ref = path.collection('members').doc();
+                            batch.set(ref, { name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+                        });
+                        batch.commit();
                     } else {
                         const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                         setMembers(sorted);
