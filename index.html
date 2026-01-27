@@ -288,6 +288,7 @@
 
             // 防閃爍與初始化鎖定標記
             const hasInitializedOwners = useRef(false);
+            const hasCheckedMembersInDb = useRef(false);
 
             // 日期驗證邏輯
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
@@ -319,7 +320,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽 (已修正：改用 ISOString)
+                // 2. 類別監聽 (修改：移除 serverTimestamp，改用 ISOString)
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -332,7 +333,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽 (已修正：改用 ISOString)
+                // 3. 費用項目監聽 (修改：移除 serverTimestamp，改用 ISOString)
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -343,12 +344,12 @@
                     }
                 });
 
-                // 4. 成員監聽 (真正修正版：刪除了所有自動建立邏輯)
+                // 4. 成員監聽 (真正乾淨版：徹底移除所有自動建立邏輯)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 無論數據如何，直接更新本地狀態。不做任何自動寫入。
+                    // 無論數據如何，直接更新本地狀態。絕對不再自動寫入 Terry/Eric。
                     setMembers(sorted);
                 }, err => console.error("Members Listener Error:", err));
 
