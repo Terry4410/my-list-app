@@ -319,7 +319,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽
+                // 2. 類別監聽 (修改：移除 serverTimestamp，改用 ISOString)
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -332,7 +332,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽
+                // 3. 費用項目監聽 (修改：移除 serverTimestamp，改用 ISOString)
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -343,12 +343,12 @@
                     }
                 });
 
-                // 4. 成員監聽 (乾淨版：完全移除預設成員邏輯，也不使用 serverTimestamp)
+                // 4. 成員監聽 (乾淨版：完全移除預設成員邏輯)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 無論數據如何，直接更新本地狀態，絕對不自動寫入任何資料
+                    // 無論數據如何，直接更新本地狀態，絕對不自動寫入任何資料，保持空白
                     setMembers(sorted);
                 }, err => console.error("Members Listener Error:", err));
 
@@ -404,10 +404,11 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
+                    // 使用 ISOString 替代 serverTimestamp 避免錯誤
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
-                        createdAt: new Date().toISOString() // 使用 ISOString 替代 serverTimestamp 避免錯誤
+                        createdAt: new Date().toISOString() 
                     });
                     setNewMemberName('');
                 } catch (err) { 
@@ -431,7 +432,7 @@
                 const data = {
                     text: taskText.trim(), owners, category, note, dateMode, startDate, endDate: dateMode === 'range' ? endDate : '',
                     images, links: links.filter(l => l.url.trim() !== ''),
-                    updatedAt: new Date().toISOString() // 使用 ISOString 替代 serverTimestamp
+                    updatedAt: new Date().toISOString() // 使用 ISOString
                 };
                 try {
                     const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks');
@@ -648,7 +649,7 @@
                                     return (
                                         <div key={t.id} className={`std-card mb-4 p-5 overflow-hidden ${t.completed ? 'opacity-70 grayscale-[0.3]' : ''}`}>
                                             <div className="flex items-start gap-4">
-                                                <div onClick={() => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks').doc(t.id).update({ completed: !t.completed, completedAt: !t.completed ? firebase.firestore.FieldValue.serverTimestamp() : null })}
+                                                <div onClick={() => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks').doc(t.id).update({ completed: !t.completed, completedAt: !t.completed ? new Date().toISOString() : null })}
                                                     className={`status-check flex-shrink-0 shadow-sm ${t.completed ? 'active' : ''}`}><Icon name="check" size={14} color="white" /></div>
                                                 <div className="flex-grow cursor-pointer" onClick={() => setExpandedHistory({...expandedHistory, [t.id]: !isExpanded})}>
                                                     <div className="flex flex-wrap items-center gap-2 mb-1">
