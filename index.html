@@ -178,16 +178,21 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // Firebase 配置
+        // ==========================================
+        //  請注意：要在 GitHub Pages 上運作，您必須
+        //  將下方的 firebaseConfig 替換為您自己的專案設定！
+        // ==========================================
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : { 
-                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM",
+                // ↓↓↓ 請將這裡替換為您自己的 Firebase Config ↓↓↓
+                apiKey: "AIzaSyDcNgcQWZTg2UijNW7LS4AnC6XQqjIaNVM", 
                 authDomain: "ghibli-list.firebaseapp.com",
                 projectId: "ghibli-list",
                 storageBucket: "ghibli-list.firebasestorage.app",
                 messagingSenderId: "730434760352",
                 appId: "1:730434760352:web:23190ab321a6261905e3c5"
+                // ↑↑↑ 預設的這組 Key 會限制網域，導致 GitHub 報錯 ↑↑↑
             };
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : "ghibli-pro-app";
@@ -250,11 +255,13 @@
             const [tasks, setTasks] = useState([]);
             const [categories, setCategories] = useState([]);
             const [expenseItems, setExpenseItems] = useState([]); 
-            // 修正重點1: 預設就帶入 Terry 與 Eric，確保介面上一開始就有選項
+            
+            // 預設就帶入 Terry 與 Eric，確保介面上一開始就有選項
             const [members, setMembers] = useState([
                 { id: 'default-1', name: 'Terry' },
                 { id: 'default-2', name: 'Eric' }
             ]);
+            
             const [loading, setLoading] = useState(true);
             const [activeTab, setActiveTab] = useState('list'); 
             const [sortBy, setSortBy] = useState('date_asc'); 
@@ -267,7 +274,8 @@
             const [tempKeyword, setTempKeyword] = useState('');
             const [expandedHistory, setExpandedHistory] = useState({});
 
-            const chartRefs = useRef({ trend: null, item: null });
+            // 增加 catChart 參考
+            const chartRefs = useRef({ trend: null, item: null, cat: null });
 
             const [taskText, setTaskText] = useState('');
             const [owners, setOwners] = useState([]);
@@ -324,7 +332,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽
+                // 2. 類別監聽 (使用 ISOString)
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -337,7 +345,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽
+                // 3. 費用項目監聽 (使用 ISOString)
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -348,7 +356,7 @@
                     }
                 });
 
-                // 4. 成員監聽 (修正重點2: 資料庫為空時，自動保留/建立預設成員)
+                // 4. 成員監聽 (自動建立 Terry/Eric，若失敗則使用本地預設)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     
@@ -368,10 +376,18 @@
                             const batch = db.batch();
                             ['Terry', 'Eric'].forEach((name, i) => {
                                 const ref = path.collection('members').doc();
-                                // 修正重點3: 使用 new Date().toISOString() 避免 serverTimestamp 錯誤
-                                batch.set(ref, { name, order: i, createdAt: new Date().toISOString() });
+                                // 關鍵：使用 ISOString 避免錯誤
+                                batch.set(ref, { 
+                                    name, 
+                                    order: i, 
+                                    createdAt: new Date().toISOString() 
+                                });
                             });
-                            batch.commit().catch(err => console.error("Auto-create members failed (using local defaults):", err));
+                            batch.commit().catch(err => {
+                                console.error("Auto-create members failed (using local defaults):", err);
+                                // 確保至少有本地顯示
+                                setMembers([{id:'default-1', name:'Terry'}, {id:'default-2', name:'Eric'}]);
+                            });
                         }
                     }
                 }, err => {
@@ -426,6 +442,7 @@
 
             const toggleOwner = (name) => {
                 if (owners.includes(name)) {
+                    // 允許取消選擇，除非是最後一個
                     if (owners.length > 1) setOwners(owners.filter(o => o !== name));
                 } else {
                     setOwners([...owners, name]);
@@ -437,13 +454,17 @@
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
                     hasCheckedMembersInDb.current = true;
+                    // 使用 ISOString
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
                         createdAt: new Date().toISOString()
                     });
                     setNewMemberName('');
-                } catch (err) { console.error("Add Member Error:", err); }
+                } catch (err) { 
+                    console.error("Add Member Error:", err);
+                    alert("新增失敗 (可能為連線或權限問題)");
+                }
             };
 
             const handleDeleteMember = async (id) => {
@@ -455,6 +476,7 @@
                 if (!confirm("確定要刪除這位成員嗎？")) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
+                    hasCheckedMembersInDb.current = true;
                     await path.collection('members').doc(id).delete();
                 } catch (err) { console.error(err); }
             };
@@ -463,6 +485,7 @@
                 e.preventDefault();
                 if (!taskText.trim() || isProcessing || !user || isAddDateInvalid) return;
                 setIsProcessing(true);
+                // 使用 ISOString
                 const data = {
                     text: taskText.trim(), owners, category, note, dateMode, startDate, endDate: dateMode === 'range' ? endDate : '',
                     images, links: links.filter(l => l.url.trim() !== ''),
@@ -471,6 +494,7 @@
                 try {
                     const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks');
                     if (editingId) await ref.doc(editingId).update(data);
+                    // 使用 ISOString
                     else await ref.add({ ...data, completed: false, createdAt: new Date().toISOString() });
                     resetForm(); setActiveTab('list');
                 } catch (err) {
@@ -558,6 +582,7 @@
                 sortedTasks.forEach(t => {
                     const total = calculateTaskTotal(t);
                     totalExpense += total;
+                    catMap[t.category] = (catMap[t.category] || 0) + total;
                     const currentOwners = t.owners || (t.owner ? [t.owner] : []);
                     const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
                     currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
@@ -579,6 +604,9 @@
                 const timer = setTimeout(() => {
                     if (chartRefs.current.trend) chartRefs.current.trend.destroy();
                     if (chartRefs.current.item) chartRefs.current.item.destroy();
+                    // 恢復 catChart 銷毀邏輯
+                    if (chartRefs.current.cat) chartRefs.current.cat.destroy();
+                    
                     const itemMap = {}, trendMap = {};
                     sortedTasks.forEach(t => {
                         (t.expenses || []).forEach(e => {
@@ -596,6 +624,31 @@
                         data: { labels: trendKeys, datasets: [{ data: trendKeys.map(k => trendMap[k]), backgroundColor: '#4A7C59', borderRadius: 8 }] },
                         options: { plugins: { legend: { display: false } } }
                     });
+
+                    // 恢復 catChart 繪製邏輯
+                    const catCtx = document.getElementById('catChart')?.getContext('2d');
+                    if (catCtx) {
+                        chartRefs.current.cat = new Chart(catCtx, {
+                            type: 'doughnut',
+                            data: {
+                                labels: sortedCats.map(x => x[0]),
+                                datasets: [{
+                                    data: sortedCats.map(x => x[1]),
+                                    backgroundColor: sortedCats.map(x => colorMap[x[0]]),
+                                    borderWidth: 0
+                                }]
+                            },
+                            options: {
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { position: 'right', labels: { font: { family: 'Inter', size: 10, weight: 800 }, boxWidth: 10, usePointStyle: true } }
+                                },
+                                layout: { padding: { left: 0, right: 10, top: 0, bottom: 0 } },
+                                cutout: '70%',
+                            }
+                        });
+                    }
+                    
                     const itemCtx = document.getElementById('itemChart')?.getContext('2d');
                     if (itemCtx) {
                         const sortedItems = Object.entries(itemMap).sort((a,b) => b[1] - a[1]);
@@ -821,7 +874,9 @@
                                     <div className="std-card p-5 text-center"><p className="text-[10px] text-slate-400 mb-1">花費總計</p><p className="text-2xl font-black text-indigo-600">${totalExpense.toLocaleString()}</p></div>
                                 </div>
                                 <div className="std-card p-6 shadow-sm"><h3 className="text-xs font-black mb-4 flex items-center gap-2 text-slate-500 tracking-widest uppercase"><Icon name="trending-up" className="text-indigo-600" /> 月度支出趨勢</h3><div className="h-48"><canvas id="trendChart"></canvas></div></div>
-                                <div className="std-card p-6 shadow-sm"><h3 className="text-xs font-black mb-4 flex items-center gap-2 text-slate-500 tracking-widest uppercase"><Icon name="pie-chart" className="text-indigo-600" /> 類別分佈佔比</h3>{renderProgressList(sortedCats, totalExpense)}</div>
+                                <div className="std-card p-6 shadow-sm"><h3 className="text-xs font-black mb-4 flex items-center gap-2 text-slate-500 tracking-widest uppercase"><Icon name="pie-chart" className="text-indigo-600" /> 類別分佈佔比</h3>
+                                    {totalExpense > 0 ? <div className="h-48"><canvas id="catChart"></canvas></div> : <div className="text-center text-slate-300 text-xs py-4 font-bold">尚無支出資料</div>}
+                                </div>
                                 <div className="std-card p-6 shadow-sm"><h3 className="text-xs font-black mb-4 flex items-center gap-2 text-slate-500 tracking-widest uppercase"><Icon name="users" className="text-indigo-600" /> 成員支出統計 (平均分攤)</h3>{renderProgressList(sortedOwners, totalExpense)}</div>
                                 <div className="std-card p-6 shadow-sm"><h3 className="text-xs font-black mb-4 flex items-center gap-2 text-slate-500 tracking-widest uppercase"><Icon name="bar-chart-2" className="text-indigo-600" /> 項目支出排行榜</h3><div className="h-64"><canvas id="itemChart"></canvas></div></div>
                             </div>
