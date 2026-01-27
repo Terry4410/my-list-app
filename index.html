@@ -286,9 +286,9 @@
             const [newExpenseItemName, setNewExpenseItemName] = useState('');
             const [newMemberName, setNewMemberName] = useState('');
 
-            // 初始化標記，防止閃爍與重複寫入
+            // 初始化與防閃爍標記
             const hasInitializedOwners = useRef(false);
-            const initialMembersChecked = useRef(false);
+            const autoInitDone = useRef(false);
 
             // 日期驗證邏輯
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
@@ -344,30 +344,21 @@
                     }
                 });
 
-                // 4. 成員監聽 (深度修復版)
+                // 4. 成員監聽 (修正：移除 metadata 強制初始化，改為手動一次性檢查)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
-                    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    const sorted = data.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
-                    
-                    // 先同步最新的資料到介面狀態
+                    const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     setMembers(sorted);
 
-                    // 僅在「初次載入」且「名單為空」時初始化預設成員
-                    // initialMembersChecked 標記可防止使用者刪除完所有人後，名單又自動跳回 Terry/Eric
-                    if (!initialMembersChecked.current && !snap.metadata.fromCache) {
-                        initialMembersChecked.current = true;
-                        if (data.length === 0) {
-                            const batch = db.batch();
-                            ['Terry', 'Eric'].forEach((name, i) => {
-                                const ref = path.collection('members').doc();
-                                batch.set(ref, { 
-                                    name, 
-                                    order: i, 
-                                    createdAt: firebase.firestore.FieldValue.serverTimestamp() 
-                                });
-                            });
-                            batch.commit().catch(console.error);
-                        }
+                    // 僅在第一次打開網頁、確定沒資料且尚未執行過 autoInit 時執行
+                    if (memberData.length === 0 && !autoInitDone.current && !snap.metadata.fromCache) {
+                        autoInitDone.current = true;
+                        const batch = db.batch();
+                        ['Terry', 'Eric'].forEach((name, i) => {
+                            const ref = path.collection('members').doc();
+                            batch.set(ref, { name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+                        });
+                        batch.commit();
                     }
                 });
 
@@ -423,8 +414,8 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    // 確保初始化檢查標記已被設定，避免自動初始化覆蓋 Peter/David
-                    initialMembersChecked.current = true;
+                    // 標記已手動處理，防止自動補回 Terry/Eric
+                    autoInitDone.current = true;
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
@@ -432,6 +423,15 @@
                     });
                     setNewMemberName('');
                 } catch (err) { console.error("Add Member Error:", err); }
+            };
+
+            const handleDeleteMember = async (id) => {
+                if (!confirm("確定要刪除這位成員嗎？")) return;
+                const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
+                try {
+                    autoInitDone.current = true; // 防止刪除後又自動跳出 Terry/Eric
+                    await path.collection('members').doc(id).delete();
+                } catch (err) { console.error(err); }
             };
 
             const handleSubmit = async (e) => {
@@ -450,7 +450,7 @@
                     resetForm(); setActiveTab('list');
                 } catch (err) {
                     console.error("Save Error:", err);
-                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多超過容量限制，請減少圖片或備註內容。");
+                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多，請減少附件。");
                     else alert("儲存失敗");
                 }
                 setIsProcessing(false);
@@ -464,7 +464,7 @@
 
             const startEdit = (t) => {
                 setTaskText(t.text); 
-                // 相容舊資料格式：如果沒有 owners 陣列，則使用舊的單一 owner 欄位
+                // 相容舊格式：若 owners 不存在，則使用舊的單一 owner
                 setOwners(t.owners || (t.owner ? [t.owner] : (members.length > 0 ? [members[0].name] : []))); 
                 setCategory(t.category); setNote(t.note || '');
                 setStartDate(t.startDate || ''); setEndDate(t.endDate || ''); setImages(t.images || []);
@@ -500,7 +500,6 @@
 
             const calculateTaskTotal = (t) => (t.expenses || []).reduce((s, i) => s + (parseFloat(i.amount) || 0), 0);
 
-            // 資料篩選邏輯 (相容舊 owner 格式)
             const sortedTasks = useMemo(() => {
                 let res = [...tasks];
                 if (filterCat !== 'All') res = res.filter(t => t.category === filterCat);
@@ -521,7 +520,6 @@
                 return res;
             }, [tasks, filterCat, filterOwner, filterExpItem, filterStartDate, filterEndDate, filterKeyword, sortBy]);
 
-            // 分析統計
             const analyticsData = useMemo(() => {
                 const catMap = {}, ownerMap = {};
                 let totalExpense = 0;
@@ -529,7 +527,6 @@
                     const total = calculateTaskTotal(t);
                     totalExpense += total;
                     catMap[t.category] = (catMap[t.category] || 0) + total;
-                    // 多成員平均分攤邏輯
                     const currentOwners = t.owners || (t.owner ? [t.owner] : []);
                     const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
                     currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
@@ -628,7 +625,7 @@
                                                 onKeyDown={e => e.key === 'Enter' && setFilterKeyword(tempKeyword)} placeholder="關鍵字..." className="w-full bg-transparent border-none text-[11px] font-black p-2 outline-none" />
                                             <button onClick={() => setFilterKeyword(tempKeyword)} className="p-1.5 text-emerald-500 hover:text-emerald-700 transition-colors"><Icon name="search" size={16} /></button>
                                         </div>
-                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm hover:bg-rose-100 transition-colors">清空篩選</button>
+                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm">清空篩選</button>
                                     </div>
                                     <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 z-10">
                                         <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">類別篩選</option>{categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
@@ -679,7 +676,7 @@
                                             {isExpanded && (
                                                 <div className="mt-4 pt-4 border-t border-slate-50 space-y-4 animate-in slide-in-from-top-2">
                                                     {t.note && <div className="text-sm text-slate-500 bg-[#FDFCF0] p-4 rounded-xl whitespace-pre-line border border-[#E9EED9]">{t.note}</div>}
-                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件圖片" />)}</div>}
+                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件" />)}</div>}
                                                     {t.links && t.links.length > 0 && <div className="flex flex-wrap gap-2">{t.links.map((l, i) => <a key={i} href={l.url} target="_blank" className="text-[10px] bg-white border border-emerald-100 text-emerald-600 px-3 py-1.5 rounded-lg font-bold flex items-center gap-2"><Icon name="link" size={10} /> {l.label || "連結"}</a>)}</div>}
                                                     {t.expenses && t.expenses.length > 0 && (
                                                         <div className="bg-amber-50/30 p-3 rounded-xl">
@@ -713,7 +710,7 @@
                                             </div>
                                             <div className="flex flex-wrap gap-2">
                                                 {members.length === 0 ? (
-                                                    <p className="text-[10px] text-slate-300 font-bold py-2 italic">請點選管理新增成員</p>
+                                                    <p className="text-[10px] text-slate-300 font-bold py-2 italic tracking-tighter">請點選管理新增成員</p>
                                                 ) : (
                                                     members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)
                                                 )}
@@ -732,7 +729,7 @@
                                                 {members.map((m, idx) => (
                                                     <span key={m.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'member')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'member')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">
                                                         {m.name}
-                                                        <button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('members').doc(m.id).delete()} className="text-rose-300 hover:text-rose-500 transition-colors"><Icon name="x" size={10} /></button>
+                                                        <button type="button" onClick={()=>handleDeleteMember(m.id)} className="text-rose-300 hover:text-rose-500 transition-colors"><Icon name="x" size={10} /></button>
                                                     </span>
                                                 ))}
                                             </div>
@@ -761,7 +758,7 @@
                                     </div>
 
                                     <div>
-                                        <div className="flex justify-between items-center mb-3"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">相關連結資源</label><button type="button" onClick={handleLinkAdd} className="text-[10px] text-indigo-500 font-bold underline">+ 新增連結</button></div>
+                                        <div className="flex justify-between items-center mb-3"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">相關連結資源</label><button type="button" onClick={handleLinkAdd} className="text-[10px] text-indigo-600 font-bold underline">+ 新增連結</button></div>
                                         <div className="space-y-2">{links.map((li, i) => (<div key={i} className="flex gap-2 items-center p-2 bg-white border rounded-xl animate-fade-in shadow-sm"><input className="w-24 !p-1.5 text-[11px] bg-slate-50 font-bold rounded-lg" placeholder="標籤" value={li.label} onChange={e => { const n = [...links]; n[i].label = e.target.value; setLinks(n); }} /><input className="flex-grow !p-1.5 text-[11px] bg-slate-50 text-indigo-500 font-black rounded-lg" placeholder="https://..." value={li.url} onChange={e => { const n = [...links]; n[i].url = e.target.value; setLinks(n); }} /><button type="button" onClick={() => setLinks(links.filter((_, idx) => idx !== i))} className="p-1 text-rose-300 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={14} /></button></div>))}</div>
                                     </div>
 
@@ -771,7 +768,7 @@
                                                 {images.map((img, idx) => (<div key={idx} className="relative group/item"><img src={img} className="img-preview shadow-sm" alt="預覽" /><button type="button" onClick={()=>setImages(images.filter((_, i)=>i!==idx))} className="absolute -top-2 -right-2 bg-white text-rose-500 rounded-full p-1 shadow-md border opacity-0 group-hover/item:opacity-100 transition-opacity"><Icon name="x" size={10} /></button></div>))}
                                                 <div className="w-20 h-20 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-center text-slate-300 hover:text-emerald-400 hover:border-emerald-400 transition-all cursor-pointer relative shadow-sm shadow-inner"><Icon name="image-plus" size={24} /><input type="file" accept="image/*" multiple onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" /></div>
                                             </div>
-                                            <p className="text-[9px] font-bold text-center text-slate-400 uppercase tracking-widest">點選加號上傳或 Ctrl+V 貼上圖片</p>
+                                            <p className="text-[9px] font-bold text-center text-slate-400 uppercase tracking-widest">點選加號上傳或在此 Ctrl+V 貼上截圖</p>
                                         </div>
                                     </div>
 
