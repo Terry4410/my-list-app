@@ -326,7 +326,7 @@
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
                         ['日常', '學習', '美食', '旅遊', '健康'].forEach((name, i) => 
-                            path.collection('categories').add({ name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+                            path.collection('categories').add({ name, order: i, createdAt: new Date().toISOString() }));
                     } else {
                         const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                         setCategories(sorted);
@@ -339,13 +339,13 @@
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
                         ['交通', '住宿', '門票', '餐費', '購物'].forEach((name, i) => 
-                            path.collection('expenseItems').add({ name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+                            path.collection('expenseItems').add({ name, order: i, createdAt: new Date().toISOString() }));
                     } else {
                         setExpenseItems(d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0)));
                     }
                 });
 
-                // 4. 成員監聽 (修正版：徹底移除預設成員邏輯)
+                // 4. 成員監聽 (修正版：徹底移除預設成員邏輯，避免閃爍與干擾)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
@@ -417,12 +417,14 @@
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        // 改用字串時間，避免 Firebase ServerTimestamp 物件在某些環境下的相容性問題
+                        createdAt: new Date().toISOString()
                     });
                     setNewMemberName('');
                 } catch (err) { 
                     console.error("Add Member Error:", err); 
-                    alert("新增成員失敗，請檢查網路連線或重新整理頁面。");
+                    // 顯示完整錯誤訊息以便除錯
+                    alert("新增成員失敗：" + err.message);
                 } finally {
                     setAddingMember(false);
                 }
@@ -433,7 +435,10 @@
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
                     await path.collection('members').doc(id).delete();
-                } catch (err) { console.error(err); }
+                } catch (err) { 
+                    console.error(err);
+                    alert("刪除失敗：" + err.message);
+                }
             };
 
             const handleSubmit = async (e) => {
@@ -443,17 +448,17 @@
                 const data = {
                     text: taskText.trim(), owners, category, note, dateMode, startDate, endDate: dateMode === 'range' ? endDate : '',
                     images, links: links.filter(l => l.url.trim() !== ''),
-                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    updatedAt: new Date().toISOString()
                 };
                 try {
                     const ref = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('tasks');
                     if (editingId) await ref.doc(editingId).update(data);
-                    else await ref.add({ ...data, completed: false, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+                    else await ref.add({ ...data, completed: false, createdAt: new Date().toISOString() });
                     resetForm(); setActiveTab('list');
                 } catch (err) {
                     console.error("Save Error:", err);
                     if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多超出容量限制，請減少圖片或備註。");
-                    else alert("儲存失敗");
+                    else alert("儲存失敗：" + err.message);
                 }
                 setIsProcessing(false);
             };
@@ -749,7 +754,7 @@
                                     {showCatAdmin && (
                                         <div className="p-4 bg-emerald-50/50 rounded-2xl border-2 border-emerald-100 border-dashed animate-fade-in shadow-inner">
                                             <div className="flex flex-wrap gap-2 mb-4">{categories.map((cat, idx) => (<span key={cat.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'cat')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'cat')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">{cat.name}<button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').doc(cat.id).delete()} className="text-rose-300 hover:text-rose-500 transition-colors"><Icon name="x" size={10} /></button></span>))}</div>
-                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs font-bold" placeholder="新類別名稱" value={newCategoryName} onChange={e=>setNewCategoryName(e.target.value)} /><button type="button" onClick={()=>{ if(!newCategoryName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').add({name: newCategoryName.trim(), order: categories.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewCategoryName(''); }} className="bg-emerald-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-emerald-700 transition-colors">新增</button></div>
+                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs font-bold" placeholder="新類別名稱" value={newCategoryName} onChange={e=>setNewCategoryName(e.target.value)} /><button type="button" onClick={()=>{ if(!newCategoryName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').add({name: newCategoryName.trim(), order: categories.length, createdAt: new Date().toISOString()}); setNewCategoryName(''); }} className="bg-emerald-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-emerald-700 transition-colors">新增</button></div>
                                         </div>
                                     )}
 
@@ -809,7 +814,7 @@
                                     {showExpItemAdmin && (
                                         <div className="p-3 bg-amber-50/50 rounded-xl border border-amber-100 mb-3 animate-fade-in">
                                             <div className="flex flex-wrap gap-1.5 mb-2">{expenseItems.map((item, idx) => (<span key={item.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'exp')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'exp')} className="bg-white border px-2 py-0.5 rounded-lg text-[9px] font-black flex items-center gap-1.5 drag-handle shadow-sm">{item.name}<button onClick={() => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').doc(item.id).delete()} className="text-rose-300 hover:text-rose-500 transition-colors"><Icon name="x" size={10} /></button></span>))}</div>
-                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-[10px] rounded-lg border-amber-100 font-bold" placeholder="新項目名稱" value={newExpenseItemName} onChange={e => setNewExpenseItemName(e.target.value)} /><button onClick={()=>{ if(!newExpenseItemName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').add({name: newExpenseItemName.trim(), order: expenseItems.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewExpenseItemName(''); }} className="bg-amber-500 text-white px-3 rounded-lg text-[10px] font-black shadow hover:bg-amber-600 transition-all">新增</button></div>
+                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-[10px] rounded-lg border-amber-100 font-bold" placeholder="新項目名稱" value={newExpenseItemName} onChange={e => setNewExpenseItemName(e.target.value)} /><button onClick={()=>{ if(!newExpenseItemName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').add({name: newExpenseItemName.trim(), order: expenseItems.length, createdAt: new Date().toISOString()}); setNewExpenseItemName(''); }} className="bg-amber-500 text-white px-3 rounded-lg text-[10px] font-black shadow hover:bg-amber-600 transition-all">新增</button></div>
                                         </div>
                                     )}
                                 </div>
