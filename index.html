@@ -343,29 +343,33 @@
                     }
                 });
 
-                // 4. 成員監聽 (修復：移除 Metadata 嚴格判斷，並確保清單始終更新)
+                // 4. 成員監聽 (修正邏輯，確保 Peter 等新成員能顯示)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     
-                    // 無論長度是否為 0，都先更新本地狀態，防止新增後不顯示
+                    // 無論長度是否為 0，都先同步到介面狀態中
                     const sorted = d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     setMembers(sorted);
 
-                    // 僅在資料庫確實為空且非快取狀態時初始化預設成員
+                    // 僅當資料庫完全為空且確定不是快取資料時，才初始化 Terry & Eric
                     if (d.length === 0 && !snap.metadata.fromCache) {
                         const batch = db.batch();
                         ['Terry', 'Eric'].forEach((name, i) => {
                             const ref = path.collection('members').doc();
-                            batch.set(ref, { name, order: i, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+                            batch.set(ref, { 
+                                name, 
+                                order: i, 
+                                createdAt: firebase.firestore.FieldValue.serverTimestamp() 
+                            });
                         });
-                        batch.commit();
+                        batch.commit().catch(err => console.error("Initial Members error:", err));
                     }
                 }, err => console.error("Members Listener Error:", err));
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
 
-            // 處理成員初始選取，僅執行一次
+            // 處理成員初始選取，僅在成員清單第一次載入成功時執行一次
             useEffect(() => {
                 if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
                     setOwners([members[0].name]);
@@ -420,6 +424,7 @@
                         createdAt: firebase.firestore.FieldValue.serverTimestamp()
                     });
                     setNewMemberName('');
+                    // 這裡不需要手動 setMembers，因為 onSnapshot 會自動偵測到新成員 Peter 的加入並更新
                 } catch (err) {
                     console.error("Add Member Error:", err);
                 }
@@ -546,7 +551,6 @@
             }, [activeTab, sortedTasks]);
 
             const analyticsData = useMemo(() => {
-                if (activeTab !== 'analytics') return { sortedCats: [], sortedOwners: [], totalExpense: 0, colorMap: {} };
                 const catMap = {}, ownerMap = {};
                 let totalExpense = 0;
                 sortedTasks.forEach(t => {
@@ -565,7 +569,7 @@
                     if (!colorMap[name]) { colorMap[name] = GHIBLI_COLORS[colorIndex % GHIBLI_COLORS.length]; colorIndex++; }
                 });
                 return { sortedCats, sortedOwners, totalExpense, colorMap };
-            }, [activeTab, sortedTasks]);
+            }, [sortedTasks]);
 
             const { sortedCats, sortedOwners, totalExpense, colorMap } = analyticsData;
 
@@ -695,7 +699,7 @@
                                     <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">事項名稱</label><input className="w-full text-lg font-black" value={taskText} onChange={e => setTaskText(e.target.value)} placeholder="要做什麼？" required /></div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">成員 (多選)</label><button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
+                                            <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">歸屬成員 (可多選)</label><button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
                                             <div className="flex flex-wrap gap-2">
                                                 {members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)}
                                             </div>
@@ -709,14 +713,14 @@
                                     {showMemberAdmin && (
                                         <div className="p-4 bg-indigo-50/50 rounded-2xl border-2 border-indigo-100 border-dashed animate-fade-in">
                                             <div className="flex flex-wrap gap-2 mb-4">{members.map((m, idx) => (<span key={m.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'member')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'member')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">{m.name}<button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('members').doc(m.id).delete()} className="text-rose-300 hover:text-rose-500"><Icon name="x" size={10} /></button></span>))}</div>
-                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs" placeholder="新成員" value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} /><button type="button" onClick={handleAddMember} className="bg-indigo-600 text-white px-4 rounded-xl text-xs font-black shadow-md">新增</button></div>
+                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs" placeholder="新成員姓名" value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} /><button type="button" onClick={handleAddMember} className="bg-indigo-600 text-white px-4 rounded-xl text-xs font-black shadow-md">新增</button></div>
                                         </div>
                                     )}
 
                                     {showCatAdmin && (
                                         <div className="p-4 bg-emerald-50/50 rounded-2xl border-2 border-emerald-100 border-dashed animate-fade-in">
                                             <div className="flex flex-wrap gap-2 mb-4">{categories.map((cat, idx) => (<span key={cat.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'cat')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'cat')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">{cat.name}<button type="button" onClick={()=>db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').doc(cat.id).delete()} className="text-rose-300 hover:text-rose-500"><Icon name="x" size={10} /></button></span>))}</div>
-                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs" placeholder="新類別" value={newCategoryName} onChange={e=>setNewCategoryName(e.target.value)} /><button type="button" onClick={()=>{ if(!newCategoryName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').add({name: newCategoryName.trim(), order: categories.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewCategoryName(''); }} className="bg-emerald-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-emerald-700">新增</button></div>
+                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-xs" placeholder="新類別名稱" value={newCategoryName} onChange={e=>setNewCategoryName(e.target.value)} /><button type="button" onClick={()=>{ if(!newCategoryName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('categories').add({name: newCategoryName.trim(), order: categories.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewCategoryName(''); }} className="bg-emerald-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-emerald-700 transition-colors">新增</button></div>
                                         </div>
                                     )}
 
@@ -741,7 +745,7 @@
                                                 {images.map((img, idx) => (<div key={idx} className="relative group/item"><img src={img} className="img-preview shadow-sm" alt="預覽" /><button type="button" onClick={()=>setImages(images.filter((_, i)=>i!==idx))} className="absolute -top-2 -right-2 bg-white text-rose-500 rounded-full p-1 shadow-md border opacity-0 group-hover/item:opacity-100 transition-opacity"><Icon name="x" size={10} /></button></div>))}
                                                 <div className="w-20 h-20 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-center text-slate-300 hover:text-emerald-400 hover:border-emerald-400 transition-all cursor-pointer relative shadow-sm"><Icon name="image-plus" size={24} /><input type="file" accept="image/*" multiple onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" /></div>
                                             </div>
-                                            <p className="text-[9px] font-bold text-center text-slate-400 uppercase tracking-widest">點選加號上傳或 Ctrl+V 貼上圖片</p>
+                                            <p className="text-[9px] font-bold text-center text-slate-400 uppercase tracking-widest">點選加號上傳或在此 Ctrl+V 貼上截圖</p>
                                         </div>
                                     </div>
 
@@ -775,7 +779,7 @@
                                     {showExpItemAdmin && (
                                         <div className="p-3 bg-amber-50/50 rounded-xl border border-amber-100 mb-3 animate-fade-in">
                                             <div className="flex flex-wrap gap-1.5 mb-2">{expenseItems.map((item, idx) => (<span key={item.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'exp')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'exp')} className="bg-white border px-2 py-0.5 rounded-lg text-[9px] font-black flex items-center gap-1.5 drag-handle shadow-sm">{item.name}<button onClick={() => db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').doc(item.id).delete()} className="text-rose-300 hover:text-rose-500"><Icon name="x" size={10} /></button></span>))}</div>
-                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-[10px] rounded-lg border-amber-100" placeholder="新項目" value={newExpenseItemName} onChange={e => setNewExpenseItemName(e.target.value)} /><button onClick={()=>{ if(!newExpenseItemName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').add({name: newExpenseItemName.trim(), order: expenseItems.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewExpenseItemName(''); }} className="bg-amber-500 text-white px-3 rounded-lg text-[10px] font-black">新增</button></div>
+                                            <div className="flex gap-2"><input className="flex-grow !py-1 text-[10px] rounded-lg border-amber-100" placeholder="新項目名稱" value={newExpenseItemName} onChange={e => setNewExpenseItemName(e.target.value)} /><button onClick={()=>{ if(!newExpenseItemName.trim()) return; db.collection('artifacts').doc(appId).collection('public').doc('data').collection('expenseItems').add({name: newExpenseItemName.trim(), order: expenseItems.length, createdAt: firebase.firestore.FieldValue.serverTimestamp()}); setNewExpenseItemName(''); }} className="bg-amber-500 text-white px-3 rounded-lg text-[10px] font-black">新增</button></div>
                                         </div>
                                     )}
                                 </div>
