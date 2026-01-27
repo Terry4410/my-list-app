@@ -245,8 +245,17 @@
             });
         };
 
+        // 錯誤訊息翻譯對照表
+        const ERROR_MAP = {
+            'permission-denied': '權限不足：您可能沒有權限寫入資料庫，或資料庫規則設定有誤。',
+            'unavailable': '服務無法使用：請檢查您的網路連線，或稍後再試。',
+            'network-request-failed': '網路連線失敗：請檢查網路設定。',
+            'resource-exhausted': '配額已滿：資料庫使用量已達上限。'
+        };
+
         function App() {
             const [user, setUser] = useState(null);
+            const [isAuthReady, setIsAuthReady] = useState(false);
             const [tasks, setTasks] = useState([]);
             const [categories, setCategories] = useState([]);
             const [expenseItems, setExpenseItems] = useState([]); 
@@ -287,6 +296,7 @@
             const [newMemberName, setNewMemberName] = useState('');
             
             const [addingMember, setAddingMember] = useState(false);
+            const [dataError, setDataError] = useState(null); // 用來顯示資料讀取錯誤
 
             // 防閃爍與初始化鎖定標記
             const hasInitializedOwners = useRef(false);
@@ -307,7 +317,10 @@
                     } catch (err) { console.error("Auth Error:", err); }
                 };
                 initAuth();
-                return auth.onAuthStateChanged(setUser);
+                return auth.onAuthStateChanged((u) => {
+                    setUser(u);
+                    setIsAuthReady(true);
+                });
             }, []);
 
             // 資料監聽與同步
@@ -319,7 +332,7 @@
                 const unsubTasks = path.collection('tasks').onSnapshot(snap => {
                     setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                     setLoading(false);
-                });
+                }, err => console.error("Tasks Error:", err));
 
                 // 2. 類別監聽
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
@@ -332,7 +345,7 @@
                         setCategories(sorted);
                         if (sorted.length > 0 && !category) setCategory(sorted[0].name);
                     }
-                });
+                }, err => console.error("Cats Error:", err));
 
                 // 3. 費用項目監聽
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
@@ -343,7 +356,7 @@
                     } else {
                         setExpenseItems(d.sort((a,b) => (a.order ?? 0) - (b.order ?? 0)));
                     }
-                });
+                }, err => console.error("ExpItems Error:", err));
 
                 // 4. 成員監聽 (修正版：徹底移除預設成員邏輯，避免閃爍與干擾)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
@@ -352,8 +365,12 @@
                     
                     // 單純更新本地狀態，不做任何預設值寫入
                     setMembers(sorted);
+                    setDataError(null); // 成功讀取則清除錯誤
                     
-                }, err => console.error("Members Listener Error:", err));
+                }, err => {
+                    console.error("Members Listener Error:", err);
+                    setDataError(ERROR_MAP[err.code] || err.message);
+                });
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
@@ -414,7 +431,9 @@
                 setAddingMember(true);
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    await path.collection('members').add({
+                    // 改用 doc().set() 避免 add() 在某些 wrapper 環境下的問題
+                    const newDocRef = path.collection('members').doc();
+                    await newDocRef.set({
                         name: newMemberName.trim(),
                         order: members.length,
                         // 改用字串時間，避免 Firebase ServerTimestamp 物件在某些環境下的相容性問題
@@ -423,8 +442,8 @@
                     setNewMemberName('');
                 } catch (err) { 
                     console.error("Add Member Error:", err); 
-                    // 顯示完整錯誤訊息以便除錯
-                    alert("新增成員失敗：" + err.message);
+                    const msg = ERROR_MAP[err.code] || err.message;
+                    alert("新增成員失敗：" + msg);
                 } finally {
                     setAddingMember(false);
                 }
@@ -437,7 +456,8 @@
                     await path.collection('members').doc(id).delete();
                 } catch (err) { 
                     console.error(err);
-                    alert("刪除失敗：" + err.message);
+                    const msg = ERROR_MAP[err.code] || err.message;
+                    alert("刪除失敗：" + msg);
                 }
             };
 
@@ -458,7 +478,10 @@
                 } catch (err) {
                     console.error("Save Error:", err);
                     if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多超出容量限制，請減少圖片或備註。");
-                    else alert("儲存失敗：" + err.message);
+                    else {
+                        const msg = ERROR_MAP[err.code] || err.message;
+                        alert("儲存失敗：" + msg);
+                    }
                 }
                 setIsProcessing(false);
             };
@@ -620,7 +643,10 @@
                             </div>
                             <h1 className="text-2xl font-black text-emerald-950 tracking-widest drop-shadow-sm">清單紀錄</h1>
                         </div>
-                        <Icon name="cloud" className="absolute top-2 right-6 text-white/40" size={50} />
+                        {/* 連線狀態指示燈 */}
+                        <div className="absolute top-4 right-4 flex items-center gap-2">
+                             <div className={`w-3 h-3 rounded-full ${user ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]'} transition-colors`}></div>
+                        </div>
                     </header>
 
                     <main className="flex-grow px-5 py-6 pb-36">
@@ -719,7 +745,9 @@
                                             </div>
                                             <div className="flex flex-wrap gap-2">
                                                 {members.length === 0 ? (
-                                                    <p className="text-[10px] text-slate-300 font-bold py-2 italic tracking-tighter">請點選管理新增成員</p>
+                                                    <p className="text-[10px] text-slate-300 font-bold py-2 italic tracking-tighter">
+                                                        {dataError ? "成員載入失敗" : "請點選管理新增成員"}
+                                                    </p>
                                                 ) : (
                                                     members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)
                                                 )}
@@ -733,7 +761,10 @@
 
                                     {showMemberAdmin && (
                                         <div className="p-4 bg-indigo-50/50 rounded-2xl border-2 border-indigo-100 border-dashed animate-fade-in shadow-inner">
-                                            <p className="text-[9px] font-bold text-indigo-400 mb-2 uppercase tracking-widest">維護成員名單 (拖曳排序)</p>
+                                            <div className="flex justify-between items-center mb-2">
+                                                <p className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">維護成員名單</p>
+                                                {dataError && <span className="text-[9px] text-rose-500 font-bold">讀取錯誤: {dataError}</span>}
+                                            </div>
                                             <div className="flex flex-wrap gap-2 mb-4">
                                                 {members.map((m, idx) => (
                                                     <span key={m.id} draggable onDragStart={(e)=>handleDragStart(e, idx, 'member')} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>handleDrop(e, idx, 'member')} className="bg-white border px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-2 drag-handle shadow-sm">
