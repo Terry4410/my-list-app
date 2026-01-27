@@ -223,6 +223,7 @@
             '#606C38', '#283618', '#DDA15E', '#BC6C25', '#9E2A2B'
         ];
 
+        // 圖片壓縮函式
         const compressImage = (base64Str, maxWidth = 1024, quality = 0.7) => {
             return new Promise((resolve) => {
                 const img = new Image();
@@ -285,13 +286,14 @@
             const [newExpenseItemName, setNewExpenseItemName] = useState('');
             const [newMemberName, setNewMemberName] = useState('');
 
-            // 用於追蹤是否已經完成初始化的 Ref，防止閃爍
+            // 初始化標記，防止閃爍
             const hasInitializedOwners = useRef(false);
 
-            // 日期驗證狀態
+            // 日期驗證邏輯
             const isFilterDateInvalid = useMemo(() => filterStartDate && filterEndDate && filterEndDate < filterStartDate, [filterStartDate, filterEndDate]);
             const isAddDateInvalid = useMemo(() => dateMode === 'range' && startDate && endDate && endDate < startDate, [dateMode, startDate, endDate]);
 
+            // Firebase 登入
             useEffect(() => {
                 const initAuth = async () => {
                     try {
@@ -306,20 +308,19 @@
                 return auth.onAuthStateChanged(setUser);
             }, []);
 
+            // 資料監聽與同步
             useEffect(() => {
                 if (!user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 
-                // Tasks 監聽
+                // 1. 任務監聽
                 const unsubTasks = path.collection('tasks').onSnapshot(snap => {
-                    if (snap.metadata.hasPendingWrites) return;
                     setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                     setLoading(false);
                 });
 
-                // Categories 監聽
+                // 2. 類別監聽
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
-                    if (snap.metadata.hasPendingWrites) return;
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
                         ['日常', '學習', '美食', '旅遊', '健康'].forEach((name, i) => 
@@ -331,9 +332,8 @@
                     }
                 });
 
-                // Expense Items 監聽
+                // 3. 費用項目監聽
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
-                    if (snap.metadata.hasPendingWrites) return;
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
                         ['交通', '住宿', '門票', '餐費', '購物'].forEach((name, i) => 
@@ -343,12 +343,10 @@
                     }
                 });
 
-                // Members 監聽 - 增加 meta 檢查與初始化穩定化
+                // 4. 成員監聽 (修正：移除 hasPendingWrites 以確保初始顯示)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
-                    if (snap.metadata.hasPendingWrites) return;
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    if (d.length === 0) {
-                        // 初始化動作只執行一次
+                    if (d.length === 0 && !snap.metadata.fromCache) {
                         const batch = db.batch();
                         ['Terry', 'Eric'].forEach((name, i) => {
                             const ref = path.collection('members').doc();
@@ -364,7 +362,7 @@
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
 
-            // 當成員列表載入後，執行一次預設選取，避免在 snapshot 內更新導致閃爍
+            // 處理成員初始選取，僅執行一次
             useEffect(() => {
                 if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
                     setOwners([members[0].name]);
@@ -425,7 +423,7 @@
                     resetForm(); setActiveTab('list');
                 } catch (err) {
                     console.error("Save Error:", err);
-                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片數量過多，請減少圖片或備註內容。");
+                    if (err.message.includes('longer than 1048487 bytes')) alert("圖片過多超過容量限制，請減少圖片。");
                     else alert("儲存失敗");
                 }
                 setIsProcessing(false);
@@ -438,7 +436,8 @@
             };
 
             const startEdit = (t) => {
-                setTaskText(t.text); setOwners(t.owners || (t.owner ? [t.owner] : (members.length > 0 ? [members[0].name] : []))); 
+                setTaskText(t.text); 
+                setOwners(t.owners || (t.owner ? [t.owner] : (members.length > 0 ? [members[0].name] : []))); 
                 setCategory(t.category); setNote(t.note || '');
                 setStartDate(t.startDate || ''); setEndDate(t.endDate || ''); setImages(t.images || []);
                 setLinks(t.links?.length ? t.links : [{ label: '', url: '' }]);
@@ -493,6 +492,30 @@
                 return res;
             }, [tasks, filterCat, filterOwner, filterExpItem, filterStartDate, filterEndDate, filterKeyword, sortBy]);
 
+            // 分析統計
+            const analyticsData = useMemo(() => {
+                const catMap = {}, ownerMap = {};
+                let totalExpense = 0;
+                sortedTasks.forEach(t => {
+                    const total = calculateTaskTotal(t);
+                    totalExpense += total;
+                    catMap[t.category] = (catMap[t.category] || 0) + total;
+                    const currentOwners = t.owners || (t.owner ? [t.owner] : []);
+                    const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
+                    currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
+                });
+                const sortedCats = Object.entries(catMap).sort((a,b) => b[1] - a[1]);
+                const sortedOwners = Object.entries(ownerMap).sort((a,b) => b[1] - a[1]);
+                const colorMap = {};
+                let colorIndex = 0;
+                [...sortedCats, ...sortedOwners].forEach(([name]) => {
+                    if (!colorMap[name]) { colorMap[name] = GHIBLI_COLORS[colorIndex % GHIBLI_COLORS.length]; colorIndex++; }
+                });
+                return { sortedCats, sortedOwners, totalExpense, colorMap };
+            }, [sortedTasks]);
+
+            const { sortedCats, sortedOwners, totalExpense, colorMap } = analyticsData;
+
             useEffect(() => {
                 if (activeTab !== 'analytics' || sortedTasks.length === 0) return;
                 const timer = setTimeout(() => {
@@ -528,32 +551,8 @@
                 return () => clearTimeout(timer);
             }, [activeTab, sortedTasks]);
 
-            const analyticsData = useMemo(() => {
-                if (activeTab !== 'analytics') return { sortedCats: [], sortedOwners: [], totalExpense: 0, colorMap: {} };
-                const catMap = {}, ownerMap = {};
-                let totalExpense = 0;
-                sortedTasks.forEach(t => {
-                    const total = calculateTaskTotal(t);
-                    totalExpense += total;
-                    catMap[t.category] = (catMap[t.category] || 0) + total;
-                    const currentOwners = t.owners || (t.owner ? [t.owner] : []);
-                    const splitAmount = currentOwners.length > 0 ? total / currentOwners.length : total;
-                    currentOwners.forEach(o => { ownerMap[o] = (ownerMap[o] || 0) + splitAmount; });
-                });
-                const sortedCats = Object.entries(catMap).sort((a,b) => b[1] - a[1]);
-                const sortedOwners = Object.entries(ownerMap).sort((a,b) => b[1] - a[1]);
-                const colorMap = {};
-                let colorIndex = 0;
-                [...sortedCats, ...sortedOwners].forEach(([name]) => {
-                    if (!colorMap[name]) { colorMap[name] = GHIBLI_COLORS[colorIndex % GHIBLI_COLORS.length]; colorIndex++; }
-                });
-                return { sortedCats, sortedOwners, totalExpense, colorMap };
-            }, [activeTab, sortedTasks]);
-
-            const { sortedCats, sortedOwners, totalExpense, colorMap } = analyticsData;
-
             const renderProgressList = (dataList, total) => {
-                if (total === 0) return <div className="text-center text-slate-300 text-xs py-4 font-bold">尚無資料</div>;
+                if (total === 0) return <div className="text-center text-slate-300 text-xs py-4 font-bold">尚無支出資料</div>;
                 return (
                     <div className="space-y-4">
                         {dataList.map(([name, value]) => {
@@ -599,7 +598,7 @@
                                                 onKeyDown={e => e.key === 'Enter' && setFilterKeyword(tempKeyword)} placeholder="關鍵字..." className="w-full bg-transparent border-none text-[11px] font-black p-2 outline-none" />
                                             <button onClick={() => setFilterKeyword(tempKeyword)} className="p-1.5 text-emerald-500 hover:text-emerald-700 transition-colors"><Icon name="search" size={16} /></button>
                                         </div>
-                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm hover:bg-rose-100 transition-colors">清空篩選</button>
+                                        <button onClick={clearFilters} className="text-[10px] bg-rose-50 text-rose-500 font-black px-4 py-2.5 rounded-full whitespace-nowrap shadow-sm">清空篩選</button>
                                     </div>
                                     <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 z-10">
                                         <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="text-xs bg-[#F9FBF2] font-black border-none !py-2 rounded-full px-4 min-w-[100px]"><option value="All">類別篩選</option>{categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}</select>
@@ -619,11 +618,7 @@
                                                 <input type="date" value={filterEndDate} onChange={e => setFilterEndDate(e.target.value)} className={`text-xs w-full bg-[#F9FBF2] border-none !p-1.5 rounded-lg ${isFilterDateInvalid ? 'ring-2 ring-rose-300' : ''}`} />
                                             </div>
                                         </div>
-                                        {isFilterDateInvalid && (
-                                            <div className="mt-1 flex justify-center">
-                                                <span className="date-error-badge"><Icon name="alert-circle" size={12} /> 結束日期不可早於開始日期</span>
-                                            </div>
-                                        )}
+                                        {isFilterDateInvalid && <div className="mt-1 flex justify-center"><span className="date-error-badge"><Icon name="alert-circle" size={12} /> 結束日期不可早於開始日期</span></div>}
                                     </div>
                                 </div>
 
@@ -654,7 +649,7 @@
                                             {isExpanded && (
                                                 <div className="mt-4 pt-4 border-t border-slate-50 space-y-4 animate-in slide-in-from-top-2">
                                                     {t.note && <div className="text-sm text-slate-500 bg-[#FDFCF0] p-4 rounded-xl whitespace-pre-line border border-[#E9EED9]">{t.note}</div>}
-                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件圖片" />)}</div>}
+                                                    {t.images && t.images.length > 0 && <div className="flex flex-wrap gap-2">{t.images.map((img, idx) => <img key={idx} src={img} className="img-preview-large" alt="附件" />)}</div>}
                                                     {t.links && t.links.length > 0 && <div className="flex flex-wrap gap-2">{t.links.map((l, i) => <a key={i} href={l.url} target="_blank" className="text-[10px] bg-white border border-emerald-100 text-emerald-600 px-3 py-1.5 rounded-lg font-bold flex items-center gap-2"><Icon name="link" size={10} /> {l.label || "連結"}</a>)}</div>}
                                                     {t.expenses && t.expenses.length > 0 && (
                                                         <div className="bg-amber-50/30 p-3 rounded-xl">
@@ -682,8 +677,10 @@
                                     <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">事項名稱</label><input className="w-full text-lg font-black" value={taskText} onChange={e => setTaskText(e.target.value)} placeholder="要做什麼？" required /></div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">成員 (多選)</label><button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
-                                            <div className="flex flex-wrap gap-2">{members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)}</div>
+                                            <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">歸屬成員 (可多選)</label><button type="button" onClick={()=>setShowMemberAdmin(!showMemberAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
+                                            <div className="flex flex-wrap gap-2">
+                                                {members.map(m => <button key={m.id} type="button" onClick={() => toggleOwner(m.name)} className={`px-4 py-2 rounded-xl text-xs font-black border-2 transition-all ${owners.includes(m.name) ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-indigo-400 border-indigo-50'}`}>{m.name}</button>)}
+                                            </div>
                                         </div>
                                         <div>
                                             <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">類別</label><button type="button" onClick={()=>setShowCatAdmin(!showCatAdmin)} className="text-[10px] text-emerald-500 font-bold underline">管理</button></div>
@@ -707,16 +704,12 @@
 
                                     <div>
                                         <label className="text-[10px] font-black text-emerald-600 uppercase mb-3 block tracking-widest">日期設定</label>
-                                        <div className="flex gap-2 mb-3">{['single', 'range'].map(m => <button key={m} type="button" onClick={() => setDateMode(m)} className={`flex-1 py-2 rounded-xl text-xs font-black transition-all ${dateMode === m ? 'bg-emerald-600 text-white shadow-md' : 'bg-white border border-emerald-100 text-emerald-400'}`}>{m === 'single' ? "單日" : "區間"}</button>)}</div>
+                                        <div className="flex gap-2 mb-3">{['single', 'range'].map(m => <button key={m} type="button" onClick={() => setDateMode(m)} className={`flex-1 py-2 rounded-xl text-xs font-black transition-all ${dateMode === m ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-emerald-500 border-emerald-100'}`}>{m === 'single' ? "單日" : "區間"}</button>)}</div>
                                         <div className={`grid grid-cols-2 gap-3 p-4 bg-[#F9FBF2] rounded-2xl border transition-all ${isAddDateInvalid ? 'border-rose-400 shadow-[inset_0_0_10px_rgba(239,68,68,0.1)]' : 'border-emerald-50 shadow-inner'}`}>
                                             <div><label className="text-[9px] text-slate-400 block mb-1">開始日期</label><input type="date" className="w-full !p-1 text-xs font-bold bg-transparent border-none" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
                                             {dateMode === 'range' && <div><label className="text-[9px] text-slate-400 block mb-1">結束日期</label><input type="date" className="w-full !p-1 text-xs font-bold bg-transparent border-none" value={endDate} onChange={e => setEndDate(e.target.value)} /></div>}
                                         </div>
-                                        {isAddDateInvalid && (
-                                            <div className="mt-2 text-center animate-bounce">
-                                                <span className="date-error-badge"><Icon name="alert-triangle" size={12} /> 結束日期不能早於開始日期，請修正</span>
-                                            </div>
-                                        )}
+                                        {isAddDateInvalid && <div className="mt-2 text-center animate-bounce"><span className="date-error-badge"><Icon name="alert-triangle" size={12} /> 結束日期不能早於開始日期</span></div>}
                                     </div>
 
                                     <div>
@@ -734,7 +727,7 @@
                                         </div>
                                     </div>
 
-                                    <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">詳細備註內容</label><textarea className="w-full min-h-[120px] text-sm font-bold bg-[#F9FBF2] rounded-2xl p-4 shadow-inner border-none" value={note} onChange={e => setNote(e.target.value)} placeholder="輸入筆記內容..." /></div>
+                                    <div><label className="text-[10px] font-black text-emerald-600 uppercase mb-2 block tracking-widest">詳細備註內容</label><textarea className="w-full min-h-[120px] text-sm font-bold bg-[#F9FBF2] rounded-2xl p-4 shadow-inner border-none" value={note} onChange={e => setNote(e.target.value)} placeholder="輸入筆記..." /></div>
                                     
                                     <button type="submit" disabled={isProcessing || isAddDateInvalid} className={`w-full h-14 rounded-[1.5rem] font-black shadow-lg transition-all flex items-center justify-center gap-3 tracking-widest ${isAddDateInvalid ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none' : 'bg-emerald-600 text-white shadow-emerald-100 hover:bg-emerald-700 active:scale-[0.98]'}`}>
                                         {isProcessing ? <Icon name="loader" className="animate-spin" /> : <Icon name="sparkles" size={20} />}{editingId ? "儲存修改" : "新增事項"}
