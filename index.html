@@ -319,7 +319,7 @@
                     setLoading(false);
                 });
 
-                // 2. 類別監聽 (使用 ISOString)
+                // 2. 類別監聽
                 const unsubCats = path.collection('categories').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -332,7 +332,7 @@
                     }
                 });
 
-                // 3. 費用項目監聽 (使用 ISOString)
+                // 3. 費用項目監聽
                 const unsubExpItems = path.collection('expenseItems').onSnapshot(snap => {
                     let d = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     if (d.length === 0) {
@@ -343,19 +343,19 @@
                     }
                 });
 
-                // 4. 成員監聽 (乾淨版：完全移除預設成員邏輯)
+                // 4. 成員監聽 (乾淨版：已徹底移除預設成員邏輯)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 無論數據如何，直接更新本地狀態，不進行任何初始化寫入
+                    // 無論數據如何，直接更新本地狀態，不再自動寫入任何資料
                     setMembers(sorted);
                 }, err => console.error("Members Listener Error:", err));
 
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
 
-            // 處理成員初始選取
+            // 處理成員初始選取，僅執行一次，避免閃爍
             useEffect(() => {
                 if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
                     setOwners([members[0].name]);
@@ -404,7 +404,7 @@
                 if (!newMemberName.trim() || !user) return;
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
-                    // 使用 ISOString 替代 serverTimestamp 避免錯誤
+                    // 使用 ISOString 替代 serverTimestamp
                     await path.collection('members').add({
                         name: newMemberName.trim(),
                         order: members.length,
