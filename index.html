@@ -285,6 +285,8 @@
             const [newCategoryName, setNewCategoryName] = useState('');
             const [newExpenseItemName, setNewExpenseItemName] = useState('');
             const [newMemberName, setNewMemberName] = useState('');
+            
+            const [addingMember, setAddingMember] = useState(false);
 
             // 防閃爍與初始化鎖定標記
             const hasInitializedOwners = useRef(false);
@@ -343,12 +345,12 @@
                     }
                 });
 
-                // 4. 成員監聽 (修正版：移除自動建立預設成員的邏輯，避免閃爍與維護衝突)
+                // 4. 成員監聽 (修正版：徹底移除預設成員邏輯)
                 const unsubMembers = path.collection('members').onSnapshot(snap => {
                     const memberData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     const sorted = memberData.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
                     
-                    // 無論數據如何，直接更新本地狀態，不再自動寫入 Terry/Eric
+                    // 單純更新本地狀態，不做任何預設值寫入
                     setMembers(sorted);
                     
                 }, err => console.error("Members Listener Error:", err));
@@ -356,7 +358,7 @@
                 return () => { unsubTasks(); unsubCats(); unsubExpItems(); unsubMembers(); };
             }, [user]);
 
-            // 處理成員初始選取，僅執行一次，避免閃爍
+            // 處理成員初始選取
             useEffect(() => {
                 if (members.length > 0 && !hasInitializedOwners.current && owners.length === 0 && !editingId) {
                     setOwners([members[0].name]);
@@ -402,7 +404,14 @@
             };
 
             const handleAddMember = async () => {
-                if (!newMemberName.trim() || !user) return;
+                if (!newMemberName.trim()) return;
+                
+                if (!user) {
+                    alert("系統尚未連線，請稍候再試。");
+                    return;
+                }
+                
+                setAddingMember(true);
                 const path = db.collection('artifacts').doc(appId).collection('public').doc('data');
                 try {
                     await path.collection('members').add({
@@ -411,7 +420,12 @@
                         createdAt: firebase.firestore.FieldValue.serverTimestamp()
                     });
                     setNewMemberName('');
-                } catch (err) { console.error("Add Member Error:", err); }
+                } catch (err) { 
+                    console.error("Add Member Error:", err); 
+                    alert("新增成員失敗，請檢查網路連線或重新整理頁面。");
+                } finally {
+                    setAddingMember(false);
+                }
             };
 
             const handleDeleteMember = async (id) => {
@@ -725,7 +739,9 @@
                                             </div>
                                             <div className="flex gap-2">
                                                 <input className="flex-grow !py-1 text-xs font-bold" placeholder="新成員姓名" value={newMemberName} onChange={e=>setNewMemberName(e.target.value)} />
-                                                <button type="button" onClick={handleAddMember} className="bg-indigo-600 text-white px-4 rounded-xl text-xs font-black shadow-md hover:bg-indigo-700 transition-all">新增</button>
+                                                <button type="button" onClick={handleAddMember} disabled={addingMember || !user} className={`bg-indigo-600 text-white px-4 rounded-xl text-xs font-black shadow-md transition-all ${addingMember || !user ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-700'}`}>
+                                                    {!user ? '連線中...' : addingMember ? '新增中...' : '新增'}
+                                                </button>
                                             </div>
                                         </div>
                                     )}
